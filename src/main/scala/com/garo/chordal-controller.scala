@@ -7,6 +7,7 @@ import com.bitwig.extension.controller._
 import com.bitwig.extension.api.util.midi._
 import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api._
+import com.bitwig.extension.controller.{api => bitwig}
 
 import Helpers._
 
@@ -244,7 +245,7 @@ object CursorFns {
   def selectPrevious(cursor: Cursor): Unit = { cursor.selectPrevious() }
 }
 
-class MyDevice(device: Device)(implicit host: ControllerHost, browser: MyBrowser) {
+class MyDevice(device: bitwig.Device)(implicit host: ControllerHost, browser: MyBrowser) {
   device.exists().markInterested()
 
   def exists() = device.exists().get()
@@ -288,7 +289,7 @@ case class MyBrowser(browser: PopupBrowser) {
   def commit() = browser.commit()
 }
 
-case class MyBitwigDevice(spec: DeviceSpec, device: Device)(implicit host: ControllerHost, browser: MyBrowser)
+case class MyBitwigDevice(spec: DeviceSpec, device: bitwig.Device)(implicit host: ControllerHost, browser: MyBrowser)
     extends MyDevice(device) {
   val specificDevice = device.createSpecificBitwigDevice(spec.id)
   val paramMap = spec.params.zip(spec.params.map(specificDevice.createParameter(_))).toMap

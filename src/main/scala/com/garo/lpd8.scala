@@ -17,131 +17,62 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
 
   val noteInput = lpd8In.createNoteInput("LPD8 Drums", "000000")
 
-  val actions = Map(
-    "Toggle Play" -> transport.playAction,
-    "Stop/Reset" -> transport.stopAction,
-    "Toggle Record" -> transport.recordAction,
-    "Tap Tempo" -> transport.tapTempoAction,
-    "Cycle Next Track" -> track.cycleNextAction,
-    "Loop Track's Clip's Last 2 Bars" -> track.loopLast2BarsOfRecordingClipAction
-  )
-
-  val parameters = Map(
-    "Transport Tempo" -> transport.transport.tempo,
-    "Master Volume" -> masterTrack.volume
-  )
-
-  case class ActionPreferences(
-      cat: String,
-      name: String,
-      possibleBindings: Map[String, HardwareBindable],
-      init: Option[HardwareBindable]
-  ) {
-    val action = documentState.getEnumSetting(
-      name,
-      cat,
-      (Seq("None") ++ possibleBindings.keys).toArray,
-      possibleBindings.find({ case (str, act) => Option(act) == init }).getOrElse(("None", doNothingAction))._1
-    )
-  }
-
-  case class BindingSetting(
-      possibleBindings: Map[String, HardwareBindable],
-      name: String,
-      initialBinding: Option[HardwareBindable]
-  )(implicit settingCtx: SettingCtx)
-      extends Setting[Option[HardwareBindable]] {
-    val binding =
-      EnumSetting(name, List(BindingSetting.noneBinding) ++ possibleBindings.keys, findBinding(initialBinding))
-
-    override def get(): Option[HardwareBindable] = possibleBindings.get(binding.get)
-    override def set(bindable: Option[HardwareBindable]) = binding.set(findBinding(bindable))
-
-    def findBinding(binding: Option[HardwareBindable]) = possibleBindings
-      .find({ case (str, act) => Option(act) == initialBinding })
-      .getOrElse((BindingSetting.noneBinding, doNothingAction))
-      ._1
-
-    override def setEnabled(enabled: Boolean) = binding.setEnabled(enabled)
-    override def setShown(shown: Boolean) = { binding.setShown(shown); }
-    override def onChanged(callback: Option[HardwareBindable] => Unit) = {
-      binding.onChanged(value => callback(possibleBindings.get(value)))
-    }
-  }
-
-  object BindingSetting {
-    val noneBinding = "None"
-  }
-
-  case class ModeSetting(modeCreateCtx: SettingCtx, modeConfigCtx: SettingCtx, idx: Int, initialName: String)
-      extends Setting[Mode] {
-    val modeListNameDisplay = StringSetting(s"Mode ${idx + 1}", initialName)(modeCreateCtx)
-    modeListNameDisplay.setEnabled(false)
-
-    implicit val settingCtx = modeConfigCtx
+  case class ModeSetting(idx: Int, initialName: String)(implicit settingCtx: SettingCtx) extends Setting[Mode] {
     val name = StringSetting(s"Mode ${idx + 1}", initialName)
-    name.onChanged(name => modeListNameDisplay.set(name))
-    val shownSetting = EnumSetting(s"Bindings${settingCtx.getBlankLabel}", List("Show", "Hide"), "Show")
-    var changedAlready = false
+    val shownSetting = EnumSetting("Bindings", List("Show", "Hide"), "Hide")
     shownSetting.onChanged(shown => {
-      if (changedAlready) {
-        bindings.values.foreach(_.setShown(shown == "Show"))
-      }
-      changedAlready = true
+      bindingSelectors.values.foreach(_.setShown(shown == "Show"))
     })
-    val bindings = {
-      val builder = Map.newBuilder[LPD8Msg, BindingSetting];
-      builder ++= LPD8Msg.allMsgs.map(msg =>
-        msg -> BindingSetting(
-          msg match { case LPD8Knob(_) => parameters; case _ => actions },
-          s"${msg.name}${settingCtx.getBlankLabel}",
-          Option.empty
-        )
-      );
-      builder.result
-    }
 
-    def get() = Mode(idx, name.get, bindings.flatMap({ case (msg, binding) => Seq(msg).zip(binding.get) }))
+    val bindingSelectors = LPD8Msg.allMsgs
+      .map(msg =>
+        msg -> BindableSpec.selectorSetting(
+          s"${msg.name}",
+          msg match {
+            case LPD8Knob(_) => settingCtx.extension.bindings.filter(_.isInstanceOf[ParamBinding]);
+            case _           => settingCtx.extension.bindings.filter(_.isInstanceOf[ActionBinding]);
+          },
+          Option.empty
+        )(settingCtx.indented)
+      )
+      .toMap
+
+    def get() = Mode(idx, name.get, bindingSelectors.flatMap({ case (msg, binding) => Seq(msg).zip(binding.get) }))
     def set(mode: Mode) = {
       name.set(mode.name)
-      bindings.foreach({ case (msg, setting) => { setting.set(mode.actions.get(msg)) } })
+      bindingSelectors.foreach({ case (msg, setting) => { setting.set(mode.actions.get(msg)) } })
     }
 
-    override def setEnabled(enabled: Boolean) = (List(name) ++ bindings.values).foreach(_.setEnabled(enabled))
+    override def setEnabled(enabled: Boolean) = (List(name) ++ bindingSelectors.values).foreach(_.setEnabled(enabled))
 
     override def setShown(shown: Boolean) = {
-      List(modeListNameDisplay, name, shownSetting).foreach(_.setShown(shown))
-      bindings.values.foreach(_.setShown(shown && shownSetting.get == "Show"))
+      List(name, shownSetting).foreach(_.setShown(shown))
+      bindingSelectors.values.foreach(_.setShown(shown && shownSetting.get == "Show"))
     }
 
     override def onChanged(callback: Mode => Unit) = {
-      (List(name) ++ bindings.values).foreach(_.onChanged(_ => callback(get)))
+      (List(name) ++ bindingSelectors.values).foreach(_.onChanged(_ => callback(get)))
     }
   }
 
   val maxModes = 16
-  val modeCreateCtx = SettingCtx("Create Modes")(documentState, extension)
   val modeConfigCtx = SettingCtx("Configure Modes")(documentState, extension)
-  val modes = ListSetting(
-    1,
-    maxModes,
-    Mode(0, "New Mode", Map()),
-    idx => ModeSetting(modeCreateCtx, modeConfigCtx, idx, if (idx == 0) "Main" else s"Name $idx")
-  )(modeCreateCtx)
-  modes.onChanged(_ => update())
 
-  val currentMode = IntSetting("Current Mode", "", 0, maxModes, 1, 0)(modeCreateCtx)
+  val currentMode = IntSetting("Current Mode", "", 0, maxModes, 1, 0)(modeConfigCtx)
   currentMode.setShown(false)
   currentMode.onChanged(_ => update())
 
-  var mode: Mode = modes.get()(currentMode.get())
+  val modes = List.range(0, 16).map(idx => ModeSetting(idx, "")(modeConfigCtx))
+  modes.foreach(_.onChanged(_ => update()))
+
+  var mode: Mode = modes(currentMode.get()).get
 
   lpd8In.setMidiCallback(new ShortMidiMessageReceivedCallback {
     override def midiReceived(msg: ShortMidiMessage) = {
       if (msg.isNoteOn || msg.isNoteOff) {
         noteInput.sendRawMidiEvent(msg.getStatusByte, msg.getData1, msg.getData2)
       } else if (msg.isProgramChange) {
-        if (msg.getData1 < modes.get().length) {
+        if (msg.getData1 < modes.length) {
           currentMode.set(msg.getData1())
           update()
         }
@@ -246,14 +177,15 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
 
   def update() {
     (ccPads(mode.index) ++ knobs(mode.index) ++ notePads(mode.index)).foreach((h) => { h.disable; h.clearBindings() })
-    if (currentMode.get() >= modes.get.length) currentMode.set(modes.get.length - 1)
-    mode = modes.get()(currentMode.get())
+    if (currentMode.get() >= modes.length) currentMode.set(modes.length - 1)
+    val oldModeName = mode.name
+    mode = modes(currentMode.get()).get
     (ccPads(mode.index) ++ knobs(mode.index) ++ notePads(mode.index)).foreach(_.enable)
     LPD8Msg.allMsgs
       .map((msg) => (msg, mode.actions.get(msg)))
       .foreach({ case (msg, Some(target)) => hardwareTranslation(mode, msg).addBinding(target); case _ => })
 
-    host.showPopupNotification(s"${mode.name} Mode")
+    if (oldModeName != mode.name) host.showPopupNotification(s"${mode.name} Mode")
   }
 
   update()
