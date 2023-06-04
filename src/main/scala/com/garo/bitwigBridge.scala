@@ -289,7 +289,9 @@ class StringValue(value: bitwig.StringValue) extends Value[String](value) {
   )
 }
 
-case class SettableStringValue(value: bitwig.SettableStringValue) extends StringValue(value) with SettableValue[String] {
+case class SettableStringValue(value: bitwig.SettableStringValue)
+    extends StringValue(value)
+    with SettableValue[String] {
   override def set(newValue: String) = value.set(newValue)
 }
 
@@ -303,7 +305,7 @@ case class TrackBank(bank: bitwig.TrackBank)(implicit extension: MyControllerExt
   def currentNumberOfTracks = channelCount.get
 }
 
-class Track(track: bitwig.Track)(implicit extension: MyControllerExtension) {
+class Track(val track: bitwig.Track)(implicit extension: MyControllerExtension) {
   val volume = Parameter(track.volume)
   val trackType = new StringValue(track.trackType)
   val arm = SettableBoolValue(track.arm)
@@ -319,6 +321,7 @@ class Track(track: bitwig.Track)(implicit extension: MyControllerExtension) {
 
 case class ClipSlot(clipSlot: bitwig.ClipLauncherSlot)(implicit extension: MyControllerExtension) {
   val isRecording = new BoolValue(clipSlot.isRecording)
+  val exists = new BoolValue(clipSlot.exists)
 
   private var hasContentCallback = Option.empty[Boolean => Unit]
   clipSlot.hasContent.addValueObserver(new BooleanValueChangedCallback {
@@ -351,7 +354,8 @@ case class ClipSlot(clipSlot: bitwig.ClipLauncherSlot)(implicit extension: MyCon
   }
 }
 
-case class TrackCursor(track: CursorTrack)(implicit extension: MyControllerExtension) extends Track(track) {
+case class TrackCursor(override val track: CursorTrack)(implicit extension: MyControllerExtension)
+    extends Track(track) {
   val hasNext = new BoolValue(track.hasNext)
   val isGroup = new BoolValue(track.isGroup)
   val isGroupExpanded = new SettableBoolValue(track.isGroupExpanded)
@@ -366,21 +370,27 @@ case class TrackCursor(track: CursorTrack)(implicit extension: MyControllerExten
 
   val clipCursorSlot = ClipSlot(clipCursor.clipLauncherSlot)
 
-  val loopLast2BarsOfRecordingClipAction =
-    extension.createAction("Loop Last 2 Bars of Recording Clip", () => loopLastNBarsOfRecordingClip(2))
   def loopLastNBarsOfRecordingClip(bars: Int): Unit = {
+    if (!clipCursorSlot.exists.get) {
+      clipCursor.selectFirst()
+    }
     if (!clipCursorSlot.isRecording.get) return
     val beatsPerBar = extension.transport.beatsPerBar
 
     val loopLength = clipCursor.getLoopLength.get + extension.transport.remainder
-    val endTime = (loopLength / beatsPerBar).floor * beatsPerBar
-    val startTime = endTime - bars * extension.transport.beatsPerBar
+    val endTime = (loopLength / beatsPerBar).round * beatsPerBar
+    val startTime = endTime - bars * beatsPerBar
     clipCursor.getLoopStart.set(startTime)
     clipCursor.getPlayStart.set(startTime + loopLength - endTime)
+    clipCursor.getLoopLength.set(endTime - startTime)
     clipCursorSlot.doAfterPlayingChanges(_ => {
       clipCursor.getLoopLength.set(endTime - startTime)
     })
-    clipCursorSlot.clipSlot.launchWithOptions("none", "continue_with_quantization")
+    if (endTime > loopLength) {
+      clipCursorSlot.clipSlot.launchWithOptions("1", "play_with_quantization")
+    } else {
+      clipCursorSlot.clipSlot.launchWithOptions("none", "continue_with_quantization")
+    }
   }
 
   def cycleNextTrack() = {
@@ -565,7 +575,8 @@ case class SelectorSetting[T](
   }
 }
 
-trait BindableSpec {
+sealed trait BindableSpec {
+  def isAction: Boolean
   def createSetting()(implicit settingCtx: SettingCtx): Setting[HardwareBindable]
   def name: String
 }
@@ -602,22 +613,23 @@ trait BindingProvider {
   def createBindings()(implicit ext: MyControllerExtension): List[BindableSpec]
 }
 
-trait ActionBinding extends BindableSpec {}
-trait ParamBinding extends BindableSpec {}
-
 case class WrapperActionBinding(override val name: String, binding: bitwig.HardwareActionBindable)
-    extends ActionBinding {
+    extends BindableSpec {
+  override def isAction = true
   override def createSetting()(implicit ctx: SettingCtx) = ConstantSetting(binding)
 }
 
-case class WrapperParamBinding(override val name: String, binding: bitwig.Parameter) extends ParamBinding {
+case class WrapperParamBinding(override val name: String, binding: bitwig.Parameter) extends BindableSpec {
+  override def isAction = false
   binding.markInterested
 
   override def createSetting()(implicit ctx: SettingCtx) = ConstantSetting(binding)
 }
 
 case class CallbackBinding(override val name: String, action: () => Unit)(implicit ext: MyControllerExtension)
-    extends ActionBinding {
+    extends BindableSpec {
+  override def isAction = true
+
   val hardwareAction = ext.createAction(name, action)
   override def createSetting()(implicit ctx: SettingCtx) = ConstantSetting(hardwareAction)
 }
@@ -627,7 +639,9 @@ case class ParameterizedCallbackBinding[P](
     createParamSetting: SettingCtx => Setting[P],
     action: P => Unit
 )(implicit ext: MyControllerExtension)
-    extends ActionBinding {
+    extends BindableSpec {
+  override def isAction = true
+
   override def createSetting()(implicit settingCtx: SettingCtx) = {
     new Setting[HardwareBindable] {
       val configSetting = createParamSetting(settingCtx)
@@ -645,7 +659,9 @@ case class ParameterizedParamBinding[P](
     createParamSetting: SettingCtx => Setting[P],
     param: P => HardwareBindable
 )(implicit ext: MyControllerExtension)
-    extends ParamBinding {
+    extends BindableSpec {
+  override def isAction = true
+
   override def createSetting()(implicit settingCtx: SettingCtx) =
     createParamSetting(settingCtx).map(param)
 }

@@ -29,8 +29,8 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
         msg -> BindableSpec.selectorSetting(
           s"${msg.name}",
           msg match {
-            case LPD8Knob(_) => settingCtx.extension.bindings.filter(_.isInstanceOf[ParamBinding]);
-            case _           => settingCtx.extension.bindings.filter(_.isInstanceOf[ActionBinding]);
+            case LPD8Knob(_) => settingCtx.extension.bindings.filter(!_.isAction);
+            case _           => settingCtx.extension.bindings.filter(_.isAction);
           },
           Option.empty
         )(settingCtx.indented)
@@ -176,11 +176,11 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
   }
 
   def update() {
-    (ccPads(mode.index) ++ knobs(mode.index) ++ notePads(mode.index)).foreach((h) => { h.disable; h.clearBindings() })
+    (ccPads(mode.index) ++ knobs(mode.index)).foreach((h) => { h.disable; h.clearBindings() })
     if (currentMode.get() >= modes.length) currentMode.set(modes.length - 1)
     val oldModeName = mode.name
     mode = modes(currentMode.get()).get
-    (ccPads(mode.index) ++ knobs(mode.index) ++ notePads(mode.index)).foreach(_.enable)
+    (ccPads(mode.index) ++ knobs(mode.index)).foreach(_.enable)
     LPD8Msg.allMsgs
       .map((msg) => (msg, mode.actions.get(msg)))
       .foreach({ case (msg, Some(target)) => hardwareTranslation(mode, msg).addBinding(target); case _ => })
