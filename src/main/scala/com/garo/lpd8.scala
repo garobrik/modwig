@@ -7,6 +7,7 @@ import com.bitwig.extension.controller._
 import com.bitwig.extension.api.util.midi._
 import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api._
+import com.bitwig.extension.controller.{api => bitwig}
 
 import com.garo.ControllerExtensionProxy
 import _root_.java.util.function.Supplier
@@ -17,65 +18,65 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
 
   val noteInput = lpd8In.createNoteInput("LPD8 Drums", "000000")
 
-  case class ModeSetting(idx: Int, initialName: String)(implicit settingCtx: SettingCtx) extends Setting[Mode] {
-    val name = StringSetting(s"Mode ${idx + 1}", initialName)
-    val shownSetting = EnumSetting("Bindings", List("Show", "Hide"), "Hide")
-    shownSetting.onChanged(shown => {
-      bindingSelectors.values.foreach(_.setShown(shown == "Show"))
-    })
+  // case class ModeSetting(idx: Int, initialName: String)(implicit settingCtx: SettingCtx) extends Setting[Mode] {
+  //   val name = StringSetting(s"Mode ${idx + 1}", initialName)
+  //   val shownSetting = EnumSetting("Bindings", List("Show", "Hide"), "Hide")
+  //   shownSetting.onChanged(shown => {
+  //     bindingSelectors.values.foreach(_.setShown(shown == "Show"))
+  //   })
 
-    val bindingSelectors = LPD8Msg.allMsgs
-      .map(msg =>
-        msg -> BindableSpec.selectorSetting(
-          s"${msg.name}",
-          msg match {
-            case LPD8Knob(_) => settingCtx.extension.bindings.filter(!_.isAction);
-            case _           => settingCtx.extension.bindings.filter(_.isAction);
-          },
-          Option.empty
-        )(settingCtx.indented)
-      )
-      .toMap
+  //   val bindingSelectors = LPD8Msg.allMsgs
+  //     .map(msg =>
+  //       msg -> BindableSpec.selectorSetting(
+  //         s"${msg.name}",
+  //         msg match {
+  //           case LPD8Knob(_) => settingCtx.extension.bindings.filter(!_.isAction);
+  //           case _           => settingCtx.extension.bindings.filter(_.isAction);
+  //         },
+  //         Option.empty
+  //       )(settingCtx.indented)
+  //     )
+  //     .toMap
 
-    def get() = Mode(idx, name.get, bindingSelectors.flatMap({ case (msg, binding) => Seq(msg).zip(binding.get) }))
-    def set(mode: Mode) = {
-      name.set(mode.name)
-      bindingSelectors.foreach({ case (msg, setting) => { setting.set(mode.actions.get(msg)) } })
-    }
+  //   // def get() = Mode(idx, name.get, bindingSelectors.flatMap({ case (msg, binding) => Seq(msg).zip(binding.get) }))
+  //   // def set(mode: Mode) = {
+  //   //   name.set(mode.name)
+  //   //   bindingSelectors.foreach({ case (msg, setting) => { setting.set(mode.actions.get(msg)) } })
+  //   // }
 
-    override def setEnabled(enabled: Boolean) = (List(name) ++ bindingSelectors.values).foreach(_.setEnabled(enabled))
+  //   override def setEnabled(enabled: Boolean) = (List(name) ++ bindingSelectors.values).foreach(_.setEnabled(enabled))
 
-    override def setShown(shown: Boolean) = {
-      List(name, shownSetting).foreach(_.setShown(shown))
-      bindingSelectors.values.foreach(_.setShown(shown && shownSetting.get == "Show"))
-    }
+  //   override def setShown(shown: Boolean) = {
+  //     List(name, shownSetting).foreach(_.setShown(shown))
+  //     bindingSelectors.values.foreach(_.setShown(shown && shownSetting.get == "Show"))
+  //   }
 
-    override def onChanged(callback: Mode => Unit) = {
-      (List(name) ++ bindingSelectors.values).foreach(_.onChanged(_ => callback(get)))
-    }
-  }
+  //   override def onChanged(callback: Mode => Unit) = {
+  //     (List(name) ++ bindingSelectors.values).foreach(_.onChanged(_ => callback(get)))
+  //   }
+  // }
 
   val maxModes = 16
   val modeConfigCtx = SettingCtx("Configure Modes")(documentState, extension)
 
   val currentMode = IntSetting("Current Mode", "", 0, maxModes, 1, 0)(modeConfigCtx)
   currentMode.setShown(false)
-  currentMode.onChanged(_ => update())
+  // currentMode.onChanged(_ => update())
 
-  val modes = List.range(0, 16).map(idx => ModeSetting(idx, "")(modeConfigCtx))
-  modes.foreach(_.onChanged(_ => update()))
+  // val modes = List.range(0, 16).map(idx => ModeSetting(idx, "")(modeConfigCtx))
+  // modes.foreach(_.onChanged(_ => update()))
 
-  var mode: Mode = modes(currentMode.get()).get
+  // var mode: Mode = modes(currentMode.get()).get
 
   lpd8In.setMidiCallback(new ShortMidiMessageReceivedCallback {
     override def midiReceived(msg: ShortMidiMessage) = {
       if (msg.isNoteOn || msg.isNoteOff) {
         noteInput.sendRawMidiEvent(msg.getStatusByte, msg.getData1, msg.getData2)
       } else if (msg.isProgramChange) {
-        if (msg.getData1 < modes.length) {
-          currentMode.set(msg.getData1())
-          update()
-        }
+        // if (msg.getData1 < modes.length) {
+        //   currentMode.set(msg.getData1())
+        //   // update()
+        // }
       } else if (msg.isControlChange) {}
     }
   })
@@ -85,7 +86,7 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
     def disable(): Unit
 
     def bindingSource: HardwareBindingSource[_ <: HardwareBinding]
-    def hardwareControl: HardwareControl
+    def hardwareControl: bitwig.HardwareControl
 
     def clearBindings() = bindingSource.clearBindings()
     def addBinding(binding: HardwareBindable) = bindingSource.addBinding(binding)
@@ -169,26 +170,26 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
     }
   })
 
-  def hardwareTranslation(mode: Mode, lpd8: LPD8Msg) = lpd8 match {
-    case LPD8Button(number) => ccPads(mode.index)(number)
-    case LPD8Knob(number)   => knobs(mode.index)(number)
-    case LPD8Note(number)   => notePads(mode.index)(number)
-  }
+  // def hardwareTranslation(mode: Mode, lpd8: LPD8Msg) = lpd8 match {
+  //   case LPD8Button(number) => ccPads(mode.index)(number)
+  //   case LPD8Knob(number)   => knobs(mode.index)(number)
+  //   case LPD8Note(number)   => notePads(mode.index)(number)
+  // }
 
-  def update() {
-    (ccPads(mode.index) ++ knobs(mode.index)).foreach((h) => { h.disable; h.clearBindings() })
-    if (currentMode.get() >= modes.length) currentMode.set(modes.length - 1)
-    val oldModeName = mode.name
-    mode = modes(currentMode.get()).get
-    (ccPads(mode.index) ++ knobs(mode.index)).foreach(_.enable)
-    LPD8Msg.allMsgs
-      .map((msg) => (msg, mode.actions.get(msg)))
-      .foreach({ case (msg, Some(target)) => hardwareTranslation(mode, msg).addBinding(target); case _ => })
+  // def update() {
+  //   (ccPads(mode.index) ++ knobs(mode.index)).foreach((h) => { h.disable; h.clearBindings() })
+  //   if (currentMode.get() >= modes.length) currentMode.set(modes.length - 1)
+  //   val oldModeName = mode.name
+  //   mode = modes(currentMode.get()).get
+  //   (ccPads(mode.index) ++ knobs(mode.index)).foreach(_.enable)
+  //   LPD8Msg.allMsgs
+  //     .map((msg) => (msg, mode.actions.get(msg)))
+  //     .foreach({ case (msg, Some(target)) => hardwareTranslation(mode, msg).addBinding(target); case _ => })
 
-    if (oldModeName != mode.name) host.showPopupNotification(s"${mode.name} Mode")
-  }
+  //   if (oldModeName != mode.name) host.showPopupNotification(s"${mode.name} Mode")
+  // }
 
-  update()
+  // update()
 }
 
 sealed trait LPD8Msg {
@@ -214,13 +215,6 @@ case class LPD8Knob(number: Int) extends LPD8Msg {
 }
 case class LPD8Note(number: Int) extends LPD8Msg {
   override val name = s"Note ${number + 1}"
-}
-
-case class Mode(index: Int, name: String, actions: Map[LPD8Msg, HardwareBindable]) {}
-
-object Mode {
-  def makeList(list: Map[String, Map[LPD8Msg, HardwareBindable]]) =
-    list.zipWithIndex.map({ case ((name, actions), index) => Mode(index, name, actions) }).toList
 }
 
 class LPD8ExtensionDefinition extends ControllerExtensionDefinition {
