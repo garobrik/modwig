@@ -566,8 +566,8 @@ class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: MyControl
   def createBank(size: Int, matcher: Option[DeviceMatcher] = None) = DeviceBank(chain.createDeviceBank(size), matcher)
   def firstDeviceMatching(matcher: DeviceMatcher) = createBank(1, Some(matcher))(0)
 
-  lazy val instrumentDevice = firstDeviceMatching(ext.Matchers.instrument)
-  lazy val fxDevice = firstDeviceMatching(ext.Matchers.effect)
+  val instrumentDevice = firstDeviceMatching(ext.Matchers.instrument)
+  val fxDevice = firstDeviceMatching(ext.Matchers.effect)
 }
 
 class Channel(val channel: bitwig.Channel)(implicit ext: MyControllerExtension) extends DeviceChain(channel) {
@@ -585,8 +585,8 @@ class Track(val track: bitwig.Track)(implicit ext: MyControllerExtension) extend
   val trackType = new StringValue(track.trackType)
   val arm = SettableBoolValue(track.arm)
   val clipSlot = ClipSlot(track.clipLauncherSlotBank().getItemAt(0))
-  def sendBank = if (!Set("Master", "Effect").contains(trackType.get())) track.sendBank() else null
 
+  def sendBank = if (!Set("Master", "Effect").contains(trackType.get())) track.sendBank() else null
 }
 
 case class ClipSlot(clipSlot: bitwig.ClipLauncherSlot)(implicit extension: MyControllerExtension) {
@@ -698,6 +698,7 @@ case class Device(device: bitwig.Device)(implicit ext: MyControllerExtension) {
   val remoteControls = RemoteControls(device.createCursorRemoteControlsPage(8), device)
   val replaceAction = device.replaceDeviceInsertionPoint.browseAction()
   val exists = new BoolValue(device.exists())
+  val windowOpen = SettableBoolValue(device.isWindowOpen())
   def equalsValue(other: Device) = new BoolValue(device.createEqualsValue(other.device))
 
   lazy val selector = Selector(device.createChainSelector(), this)

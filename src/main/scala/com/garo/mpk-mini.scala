@@ -401,6 +401,16 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
         )
       )
 
+      override def onEnable() = {
+        track.select()
+        enso.device.windowOpen.set(true)
+      }
+
+      override def onDisable() = {
+        track.select()
+        enso.device.windowOpen.set(false)
+      }
+
       val enso = Enso.of(track)
       val stomp = StompBoxMode(track, this)
 
@@ -408,7 +418,10 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
         override def name = "Set Length"
 
         val actions = List(1, 2, 3, 4, 6, 8, 12, 16).map(length =>
-          createAction(() => s"Set Length To $length", () => { enso.lengthMult.set(1.0 / length); popAction.invoke() })
+          createAction(
+            () => s"Set Length To $length",
+            () => { enso.lengthMult.setImmediately((length - 1) / 32); popAction.invoke() }
+          )
         )
 
         override def bindings = ccPads.zip(actions)
@@ -422,8 +435,8 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
         ccPads(0) -> track.mute.toggleAction,
         ccPads(1) -> track.solo.toggleAction,
         ccPads(2) -> setLengthMode.pushAction,
-        knobs(3) -> track.volume.param
-      )
+        knobs(7) -> track.volume.param
+      ) ++ knobs.take(7).zip(track.fxDevice.remoteControls.controls)
     }
     val loops = List.range(0, ccPads.length).map(LoopMode)
 
