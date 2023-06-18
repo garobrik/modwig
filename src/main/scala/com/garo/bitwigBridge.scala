@@ -28,9 +28,9 @@ abstract class MyControllerExtension(implicit val host: ControllerHost) {
       TrackCursor(host.createCursorTrack(t._1, t._2, numSends, numScenes, t._3))
     )
   val selectedTrack = trackCursors(0)
-  val mainTrackBank = TrackBank(host.createMainTrackBank(128, numSends, 1))
-  val fxTrackBank = TrackBank(host.createEffectTrackBank(128, 1))
-  val masterTrack = new Track(host.createMasterTrack(1))
+  val mainTrackBank = TrackBank(host.createMainTrackBank(128, numSends, numScenes))
+  val fxTrackBank = TrackBank(host.createEffectTrackBank(128, numScenes))
+  val masterTrack = new Track(host.createMasterTrack(numScenes))
 
   val bindings = List(transport, Track).flatMap(_.createBindings())
   if (bindings.map(_.name).length != bindings.map(_.name).toSet.size)
@@ -81,11 +81,11 @@ abstract class MyControllerExtension(implicit val host: ControllerHost) {
   def createAction(name: String, action: () => Unit): HardwareActionBindable = createAction(() => name, action)
 
   object Matchers {
-    val effect = host.createAudioEffectMatcher()
-    val instrument = host.createInstrumentMatcher()
-    val lastDevice = host.createLastDeviceInChainMatcher()
-    val instrumentOrEffect = or(instrument, effect)
-    val lastAndEffect = and(lastDevice, effect)
+    def effect = host.createAudioEffectMatcher()
+    def instrument = host.createInstrumentMatcher()
+    def lastDevice = host.createLastDeviceInChainMatcher()
+    def instrumentOrEffect = or(instrument, effect)
+    def lastAndEffect = and(lastDevice, effect)
     def or(matchers: DeviceMatcher*) = host.createOrDeviceMatcher(matchers: _*)
     def and(matchers: DeviceMatcher*) = host.createAndDeviceMatcher(matchers: _*)
     def not(matcher: DeviceMatcher) = host.createNotDeviceMatcher(matcher)
@@ -299,7 +299,7 @@ case class AbsoluteHardwareKnob(
   control.setAdjustValueMatcher(onMatcher)
 }
 
-case class RelativeHardwareKnob(
+case class RelativeHardwareControl(
     name: String,
     ccNum: Int,
     channel: Option[Int] = None,
@@ -552,32 +552,33 @@ case class SettableStringValue(value: bitwig.SettableStringValue)
   override def set(newValue: String) = value.set(newValue)
 }
 
-case class TrackBank(bank: bitwig.TrackBank)(implicit ext: MyControllerExtension) {
-  val tracks = List.range(0, bank.getSizeOfBank).map(idx => new Track(bank.getItemAt(idx)))
-
-  def bankSize = tracks.size
-
+case class TrackBank(bank: bitwig.TrackBank)(implicit ext: MyControllerExtension)
+    extends Bank(bank, t => new Track(t)) {
+  def tracks = items
   val channelCount = new IntValue(bank.channelCount)
 
   def currentNumberOfTracks = channelCount.get
 }
 
-class Channel(val channel: bitwig.Channel)(implicit ext: MyControllerExtension) {
+class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: MyControllerExtension) {
+  val name = SettableStringValue(chain.name)
+
+  def createBank(size: Int, matcher: Option[DeviceMatcher] = None) = DeviceBank(chain.createDeviceBank(size), matcher)
+  def firstDeviceMatching(matcher: DeviceMatcher) = createBank(1, Some(matcher))(0)
+
+  lazy val instrumentDevice = firstDeviceMatching(ext.Matchers.instrument)
+  lazy val fxDevice = firstDeviceMatching(ext.Matchers.effect)
+}
+
+class Channel(val channel: bitwig.Channel)(implicit ext: MyControllerExtension) extends DeviceChain(channel) {
   val volume = Parameter(channel.volume)
   val pan = Parameter(channel.pan)
   val mute = SettableBoolValue(channel.mute)
   val solo = SettableBoolValue(channel.solo)
-  val name = SettableStringValue(channel.name)
   val active = SettableBoolValue(channel.isActivated)
 
   def select() = channel.selectInMixer()
   val selectAction = ext.createAction(() => name.get(), select)
-
-  def createBank(size: Int, matcher: Option[DeviceMatcher] = None) = DeviceBank(channel.createDeviceBank(1), matcher)
-  def firstDeviceMatching(matcher: DeviceMatcher) = createBank(1, Some(matcher)).deviceAt(0)
-
-  val instrumentDevice = firstDeviceMatching(ext.host.createInstrumentMatcher())
-  val fxDevice = firstDeviceMatching(ext.host.createAudioEffectMatcher())
 }
 
 class Track(val track: bitwig.Track)(implicit ext: MyControllerExtension) extends Channel(track) {
@@ -586,7 +587,6 @@ class Track(val track: bitwig.Track)(implicit ext: MyControllerExtension) extend
   val clipSlot = ClipSlot(track.clipLauncherSlotBank().getItemAt(0))
   def sendBank = if (!Set("Master", "Effect").contains(trackType.get())) track.sendBank() else null
 
-  val cursorDevice = Device(track.createCursorDevice())
 }
 
 case class ClipSlot(clipSlot: bitwig.ClipLauncherSlot)(implicit extension: MyControllerExtension) {
@@ -669,29 +669,47 @@ case class TrackCursor(override val track: CursorTrack)(implicit extension: MyCo
   def cycleNextTrack() = {
     if (track.hasNext.get) track.selectNext() else track.selectFirst()
   }
+
+  val deviceCursor = Device(track.createCursorDevice())
+}
+
+abstract class Bank[T, BT <: ObjectProxy](bank: bitwig.Bank[BT], itemCtor: BT => T)(implicit
+    ext: MyControllerExtension
+) {
+  def currentSize = bank.getSizeOfBank()
+  def maxSize = bank.getCapacityOfBank()
+  val itemCount = new IntValue(bank.itemCount())
+
+  protected val items = List.range(0, maxSize).map(idx => itemCtor(bank.getItemAt(idx)))
+
+  def apply(idx: Int) = items(idx)
 }
 
 case class DeviceBank(bank: bitwig.DeviceBank, matcher: Option[bitwig.DeviceMatcher] = None)(implicit
     ext: MyControllerExtension
-) {
+) extends Bank(bank, device => Device(device)) {
+  def devices = items
   matcher.foreach(bank.setDeviceMatcher(_))
-
-  def deviceAt(index: Int) = Device(bank.getDevice(index))
 }
 
 case class Device(device: bitwig.Device)(implicit ext: MyControllerExtension) {
-  val remoteControls = RemoteControls(device.createCursorRemoteControlsPage(8))
+  val name = new StringValue(device.name())
+  val presetName = new StringValue(device.presetName())
+  val remoteControls = RemoteControls(device.createCursorRemoteControlsPage(8), device)
   val replaceAction = device.replaceDeviceInsertionPoint.browseAction()
   val exists = new BoolValue(device.exists())
+  def equalsValue(other: Device) = new BoolValue(device.createEqualsValue(other.device))
 
   lazy val selector = Selector(device.createChainSelector(), this)
   lazy val layers = {
     val bank = device.createLayerBank(8)
-    (0 until 8).map(idx => new Channel(bank.getItemAt(0)))
+    (0 until 8).map(idx => new Channel(bank.getItemAt(idx)))
   }
+  lazy val slot = new DeviceChain(device.getCursorSlot())
 
   def createTaggedRemoteControlsPage(name: String, tag: String) = RemoteControls(
-    device.createCursorRemoteControlsPage(name, 8, tag)
+    device.createCursorRemoteControlsPage(name, 8, tag),
+    device
   )
 }
 
@@ -705,36 +723,17 @@ case class Selector(selector: bitwig.ChainSelector, device: Device)(implicit ext
   val exists = new BoolValue(selector.exists())
 }
 
-case class RemoteControls(remoteControls: CursorRemoteControlsPage)(implicit ext: MyControllerExtension) {
+case class RemoteControls(remoteControls: CursorRemoteControlsPage, device: bitwig.Device)(implicit
+    ext: MyControllerExtension
+) {
   val controls = (0 until 8).map(remoteControls.getParameter)
   val selectedPage = SettableIntValue(remoteControls.selectedPageIndex())
+  val visible = SettableBoolValue(device.isRemoteControlsSectionVisible())
 
   def apply(idx: Int) = controls(idx)
 
   val selectPageAction =
     (0 until 8).map(idx => ext.createAction(() => s"Select Page ${idx + 1}", () => selectedPage.set(idx)))
-}
-
-object Device extends BindingProvider {
-  override def createBindings()(implicit ext: MyControllerExtension) = List(
-    ParameterizedParamBinding[(Device, Int)](
-      "Device - Remote Control",
-      ctx => PairSetting(createSetting(ctx), IntSetting("Control Number", "", 1, 8, 1, 1)(ctx))(ctx),
-      { case (device, number) => device.remoteControls(number) }
-    )
-  )
-
-  def createSetting(ctx: SettingCtx) = {
-    new ProxySetting[Device] {
-      val track = Track.trackSelectorSetting("Track")(ctx)
-      override def get() = track.get.cursorDevice
-      override def proxied = List(track)
-      override def onChanged(callback: Device => Unit) = {
-        track.onChanged(_ => callback(get))
-        track.get.trackType.onChanged(_ => callback(get))
-      }
-    }
-  }
 }
 
 object Track extends BindingProvider {
@@ -806,16 +805,6 @@ object Track extends BindingProvider {
       "Track - Volume",
       trackSelectorSetting("Track"),
       track => track.volume.param
-    ),
-    CallbackBinding(
-      "Global - Record Clips For Armed Tracks",
-      () => {
-        ext.mainTrackBank.tracks.foreach(track => {
-          if (track.arm.get) {
-            track.clipSlot.clipSlot.record()
-          }
-        })
-      }
     )
   )
 

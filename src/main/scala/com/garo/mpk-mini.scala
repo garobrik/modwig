@@ -25,7 +25,7 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
     List
       .range(0, 8)
       .map(idx =>
-        RelativeHardwareKnob(
+        RelativeHardwareControl(
           s"K${idx + 1}",
           20 + idx,
           channel = Some(0),
@@ -103,21 +103,29 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
     def bindingsWithoutSelector: Mode.Bindings
     def extraSelectorBindings: Mode.Bindings = List()
 
-    val modeSelect = new Mode {
-      override def name = "Select"
-      override def bindings = {
-        assert(!extraSelectorBindings.exists { case (binding, _) => (0 until 3).map(ccPads).contains(binding) })
-        extraSelectorBindings ++ List(
-          ccPads(0) -> modes.globalModeSelector.replaceAction,
-          ccPads(1) -> modes.trackSelect.replaceAction,
-          ccPads(2) -> modes.loopSelect.replaceAction,
-          ccPads(3) -> popAction
-        )
+    val modeSelect = {
+      val outer = this
+      new Mode {
+        override def name = "Select"
+        override def bindings = {
+          assert(
+            !extraSelectorBindings.exists { case (binding, _) => (0 until 3).map(ccPads).contains(binding) },
+            s"${outer.name} should not bind to selector pads 1 to 4!"
+          )
+          extraSelectorBindings ++ modes.globals.bindingsWithoutSelector.filter(
+            _._1.isInstanceOf[RelativeHardwareControl]
+          ) ++ List(
+            ccPads(0) -> modes.globalModeSelector.replaceAction,
+            ccPads(1) -> modes.trackSelect.replaceAction,
+            ccPads(2) -> modes.loopSelect.replaceAction,
+            ccPads(3) -> popAction
+          )
+        }
       }
     }
 
     final override def bindings = {
-      assert(!bindingsWithoutSelector.exists(_._1 == ccPads(3)))
+      assert(!bindingsWithoutSelector.exists(_._1 == ccPads(3)), s"$name should not bind to pad 4!")
       bindingsWithoutSelector ++ List(
         ccPads(3) -> modeSelect.pushAction
       )
@@ -125,7 +133,7 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
   }
 
   object modes {
-    val globals: Mode = new ModeWithSelector {
+    val globals: ModeWithSelector = new ModeWithSelector {
       def name = "Globals"
       def bindingsWithoutSelector = List(
         joystick.leftButton -> selectedTrack.selectPreviousAction,
@@ -152,12 +160,12 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
         joystick.downButton -> browser.nextFileAction,
         knobs(3) -> selectedTrack.volume.param,
         knobs(7) -> masterTrack.volume.param,
-        ccPads(0) -> selectedTrack.cursorDevice.replaceAction,
+        ccPads(0) -> selectedTrack.deviceCursor.replaceAction,
         ccPads(4) -> selectedTrack.arm.toggleAction,
         ccPads(5) -> selectedTrack.active.toggleAction,
         ccPads(7) -> modes.globals.replaceAction
       ) ++ (List.range(0, 3) ++ List.range(4, 7)).map(idx =>
-        knobs(idx) -> selectedTrack.cursorDevice.remoteControls(idx)
+        knobs(idx) -> selectedTrack.deviceCursor.remoteControls(idx)
       )
     }
 
@@ -257,20 +265,90 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
       )
     }
 
-    case class TrackMode(idx: Int) extends ModeWithSelector {
-      def track = mainTrackBank.tracks(idx)
-      override def name = track.name.get
-      override def onEnable() = {
-        track.select()
-      }
+    val stompTemplates = {
+      val stompTrack = host.createCursorTrack("STOMP TEMPLATE", "Stomp Template", 0, 0, true)
+      val stompDevice = Device(
+        stompTrack.createCursorDevice("STOM_TEMPLATE", "Stomp Template", 0, CursorDeviceFollowMode.FIRST_DEVICE)
+      )
+      stompDevice.layers.map(_.fxDevice)
+    }
 
+    case class StompBoxMode(track: Track, associated: Mode) extends ModeWithSelector {
+      override def name = s"${track.name()} Stomp"
+      val mainDevice = track.firstDeviceMatching(Matchers.instrumentOrEffect)
+      val maybeStompDevice = track.firstDeviceMatching(Matchers.or(Matchers.lastAndEffect, Chain.matcher))
+      val chainDevice = Chain.of(maybeStompDevice)
+      val chain = maybeStompDevice.slot
+      val chainDevices = chain.createBank(6)
+      val stompEqualsFirst = mainDevice.equalsValue(maybeStompDevice)
+      def stompDevice = if (maybeStompDevice.exists() && !stompEqualsFirst()) Some(maybeStompDevice) else None
+
+      case class StompMode(stompIdx: Int) extends ModeWithSelector {
+        val device = chainDevices(stompIdx)
+
+        override def name = s"Stomp ${stompIdx + 1}"
+
+        val stompPickMode = {
+          val outer = this
+          new Mode {
+            override def name = s"Pick Stomp ${stompIdx + 1}"
+            val actions =
+              (0 until 8).map(fxIdx =>
+                createAction(
+                  () => s"Pick ${stompTemplates(fxIdx).name()}",
+                  () => {
+                    val insertionPoint =
+                      if (device.exists()) device.device.replaceDeviceInsertionPoint()
+                      else chain.chain.endOfDeviceChainInsertionPoint()
+                    insertionPoint.copyDevices(stompTemplates(fxIdx).device)
+                    outer.replaceAction.invoke()
+                  }
+                )
+              )
+            def bindings = ccPads.zip(actions)
+          }
+        }
+
+        val enableAction = createAction(
+          () => s"Enable Stomp $stompIdx",
+          () => if (device.exists()) this.replaceAction.invoke() else stompPickMode.replaceAction.invoke()
+        )
+
+        override def extraSelectorBindings = List(
+          ccPads(7) -> associated.replaceAction
+        )
+        override def bindingsWithoutSelector =
+          (ccPads.slice(0, 3) ++ ccPads.slice(4, 7)).zip(stomps.map(_.enableAction)) ++
+            knobs.zip(device.remoteControls.controls) ++ List(
+              ccPads(7) -> stompPickMode.replaceAction
+            )
+      }
+      val stomps = (0 until 6).map(StompMode)
+
+      override def extraSelectorBindings = List(
+        ccPads(7) -> associated.replaceAction
+      )
+      override def bindingsWithoutSelector = (ccPads.slice(0, 3) ++ ccPads.slice(4, 7)).zip(stomps.map(_.enableAction))
+    }
+
+    case class TrackMode(track: Track) extends ModeWithSelector {
       case class MPKDevice(device: Device) {
         val joystickPage = device.createTaggedRemoteControlsPage("XY", "xy")
       }
 
-      val firstDevice = MPKDevice(track.firstDeviceMatching(Matchers.instrumentOrEffect))
-      val maybeStompDevice = track.firstDeviceMatching(Matchers.lastAndEffect)
-      val stompEqualsFirst = firstDevice.device.device.createEqualsValue(maybeStompDevice.device)
+      val firstDevice = MPKDevice(
+        track.firstDeviceMatching(Matchers.or(Matchers.instrumentOrEffect, InstrumentSelector.matcher))
+      )
+
+      override def name = track.name()
+      override def onEnable() = {
+        track.select()
+        firstDevice.device.remoteControls.visible.set(true)
+        host.println(firstDevice.device.name())
+        host.println(stomp.chainDevices.itemCount().toString())
+      }
+
+      val stomp = StompBoxMode(track, this)
       val selector = firstDevice.device.selector
 
       val selectInstrumentMode = new Mode {
@@ -287,26 +365,25 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
 
         override def bindings = ccPads.zip(actions)
 
-        val maybePushAction = createAction(
+        val maybeReplaceAction = createAction(
           () => "Maybe Push",
-          () => if (selector.exists()) pushAction.invoke()
+          () => if (selector.exists()) replaceAction.invoke()
         )
       }
 
       override def bindingsWithoutSelector = List(
         knobs(7) -> track.volume.param,
         ccPads(7) -> track.arm.toggleAction
-      ) ++ (0 until 7).map(idx => knobs(idx) -> firstDevice.device.remoteControls(idx)) ++
-        ((0 until 3) ++ (4 until 7))
-          .map(ccPads)
-          .zip((0 until 6).map(firstDevice.device.remoteControls.selectPageAction)) ++
+      ) ++ knobs.take(7).zip(firstDevice.device.remoteControls.controls) ++
+        (ccPads.slice(0, 3) ++ ccPads.slice(4, 7)).zip(firstDevice.device.remoteControls.selectPageAction) ++
         joystick.mods.zip(firstDevice.joystickPage.controls)
 
       override def extraSelectorBindings = List(
-        ccPads(7) -> selectInstrumentMode.maybePushAction
+        ccPads(7) -> stomp.replaceAction,
+        ccPads(4) -> selectInstrumentMode.maybeReplaceAction
       )
     }
-    val tracks = List.range(0, ccPads.length).map(TrackMode)
+    val tracks = List.range(0, ccPads.length).map(mainTrackBank.apply).map(TrackMode)
 
     val trackSelect = new Mode {
       def name = "Track Select"
@@ -314,7 +391,7 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
     }
 
     case class LoopMode(idx: Int) extends ModeWithSelector {
-      val track = fxTrackBank.tracks(idx)
+      val track = fxTrackBank(idx)
       override def name = s"Loop ${idx + 1}"
 
       val sendMidiActions = (20 until 28).map(idx =>
@@ -325,6 +402,7 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
       )
 
       val enso = Enso.of(track)
+      val stomp = StompBoxMode(track, this)
 
       val setLengthMode = new Mode {
         override def name = "Set Length"

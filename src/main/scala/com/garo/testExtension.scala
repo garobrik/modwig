@@ -70,7 +70,7 @@ case class TestExtension(_host: ControllerHost) extends MyControllerExtension()(
 
   val controls = host.createUserControls(2)
   controls.getControl(0).setLabel("hallo")
-  clsInfo(Some(mainTrackBank.tracks.head.track.sourceSelector))
+  clsInfo(Some(mainTrackBank(0).track.sourceSelector))
 
   documentState.getSignalSetting("Do it", "Do it", "Do it").addSignalObserver(() => controls.getControl(0).touch(true))
 }
