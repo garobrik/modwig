@@ -28,6 +28,8 @@ abstract class MyControllerExtension(implicit val host: ControllerHost) {
       TrackCursor(host.createCursorTrack(t._1, t._2, numSends, numScenes, t._3))
     )
   val selectedTrack = trackCursors(0)
+  selectedTrack.clipCursor
+  selectedTrack.deviceCursor
   val mainTrackBank = TrackBank(host.createMainTrackBank(128, numSends, numScenes))
   val fxTrackBank = TrackBank(host.createEffectTrackBank(128, numScenes))
   val masterTrack = new Track(host.createMasterTrack(numScenes))
@@ -81,11 +83,11 @@ abstract class MyControllerExtension(implicit val host: ControllerHost) {
   def createAction(name: String, action: () => Unit): HardwareActionBindable = createAction(() => name, action)
 
   object Matchers {
-    def effect = host.createAudioEffectMatcher()
-    def instrument = host.createInstrumentMatcher()
-    def lastDevice = host.createLastDeviceInChainMatcher()
-    def instrumentOrEffect = or(instrument, effect)
-    def lastAndEffect = and(lastDevice, effect)
+    val effect = host.createAudioEffectMatcher()
+    val instrument = host.createInstrumentMatcher()
+    val lastDevice = host.createLastDeviceInChainMatcher()
+    val instrumentOrEffect = or(instrument, effect)
+    val lastAndEffect = and(lastDevice, effect)
     def or(matchers: DeviceMatcher*) = host.createOrDeviceMatcher(matchers: _*)
     def and(matchers: DeviceMatcher*) = host.createAndDeviceMatcher(matchers: _*)
     def not(matcher: DeviceMatcher) = host.createNotDeviceMatcher(matcher)
@@ -196,7 +198,6 @@ abstract class Mode(implicit ext: MyControllerExtension, ctx: ModeCtx) {
 
 object Mode {
   type Bindings = List[(HardwareControl[_], HardwareBindable)]
-
 }
 
 case class Browser(browser: bitwig.PopupBrowser) {
@@ -289,6 +290,7 @@ case class AbsoluteHardwareKnob(
     midiPort: bitwig.MidiIn
 ) extends HardwareControl(surface.createAbsoluteHardwareKnob, name, indexInGroup, bounds) {
   override def bindingSource = control
+  val value = new DoubleValue(control.value())
 
   val onMatcher = channel match {
     case Some(channel) => midiPort.createAbsoluteCCValueMatcher(channel, ccNum)
@@ -488,25 +490,115 @@ case class HeaderSetting(text: String)(implicit settingCtx: SettingCtx) extends 
   override def setShown(shown: Boolean) = signal.setShown(shown)
 }
 
-abstract class Value[T](value: bitwig.Value[_ <: ValueChangedCallback]) {
-  value.markInterested()
-
+abstract class Observable[T] {
   protected def addValueObserver(callback: T => Unit)
-  def onChanged(callback: T => Unit) = addValueObserver(callback)
+  addValueObserver(t => {
+    callbacks.foreach(_(t))
+  })
+  var callbacks = Set.empty[T => Unit]
+
+  def onChanged(callback: T => Unit) = {
+    callbacks = callbacks + callback
+    () => callbacks = callbacks - callback
+  }
+
+  def doAfterChanged(callback: T => Unit) = {
+    var cancel: () => Unit = null
+    cancel = onChanged(t => {
+      callback(t)
+      cancel()
+    })
+    cancel
+  }
+
   def get(): T
   def apply() = get()
+}
+
+abstract class Value[T](value: bitwig.Value[_ <: ValueChangedCallback]) extends Observable[T] {
+  value.markInterested()
+}
+
+case class ValueFromLastObserved[T](initial: T, valueObserverCallback: (T => Unit) => Unit) extends Observable[T] {
+  var lastVal = initial
+  override def get() = lastVal
+  override protected def addValueObserver(callback: T => Unit) = valueObserverCallback(callback)
+  onChanged(newVal => lastVal = newVal)
 }
 
 trait SettableValue[T] extends Value[T] {
   def set(newValue: T)
 }
 
-case class Parameter(param: bitwig.Parameter) extends Value[Double](param) {
-  override def addValueObserver(callback: Double => Unit) = param.addRawValueObserver(
+class DoubleValue(value: bitwig.DoubleValue) extends Value[Double](value) {
+  override def addValueObserver(callback: Double => Unit) = value.addValueObserver(
     new DoubleValueChangedCallback {
       override def valueChanged(newValue: Double) = callback(newValue)
     }
   )
+  override def get() = value.get()
+}
+
+case class SettableDoubleValue(value: bitwig.SettableDoubleValue)
+    extends DoubleValue(value)
+    with SettableValue[Double] {
+  override def set(double: Double) = value.set(double)
+  def inc(double: Double) = value.inc(double)
+}
+
+case class BeatTime(beats: Double) {
+  def bars(implicit ext: MyControllerExtension) = beats / ext.transport.beatsPerBar()
+  def beatInBar(implicit ext: MyControllerExtension) = (this - floorBar).beats.floor
+
+  def +(other: BeatTime) = BeatTime(beats + other.beats)
+  def -(other: BeatTime) = BeatTime(beats - other.beats)
+
+  def floorBar(implicit ext: MyControllerExtension) = BeatTime(bars.floor * ext.transport.beatsPerBar())
+  def ceilBar(implicit ext: MyControllerExtension) = BeatTime(bars.ceil * ext.transport.beatsPerBar())
+
+  def >=(other: BeatTime) = beats >= other.beats
+  def >(other: BeatTime) = beats > other.beats
+  def <(other: BeatTime) = beats < other.beats
+  def <=(other: BeatTime) = beats <= other.beats
+}
+
+object BeatTime {
+  def bars(numBars: Int)(implicit ext: MyControllerExtension) = BeatTime(numBars * ext.transport.beatsPerBar())
+  def beats(numBeats: Int) = BeatTime(numBeats)
+  def eights(numEights: Int) = BeatTime(numEights.toDouble / 2.0)
+  def sixteenths(numEights: Int) = BeatTime(numEights.toDouble / 4.0)
+  def thirtySeconds(numEights: Int) = BeatTime(numEights.toDouble / 8.0)
+}
+
+class BeatTimeValue(value: bitwig.BeatTimeValue)(implicit ext: MyControllerExtension) extends Value[BeatTime](value) {
+  override def addValueObserver(callback: BeatTime => Unit) = value.addValueObserver(
+    new DoubleValueChangedCallback {
+      override def valueChanged(newValue: Double) = callback(BeatTime(newValue))
+    }
+  )
+
+  override def get() = BeatTime(value.get())
+
+  override def onChanged(callback: BeatTime => Unit) = {
+    ext.host.println(s"transport listening to: ${(callbacks.size + 1).toString}")
+    super.onChanged(callback)
+  }
+}
+
+case class SettableBeatTimeValue(value: bitwig.SettableBeatTimeValue)(implicit ext: MyControllerExtension)
+    extends BeatTimeValue(value)
+    with SettableValue[BeatTime] {
+  override def set(beatTime: BeatTime) = value.set(beatTime.beats)
+}
+
+case class Parameter(param: bitwig.Parameter) extends Value[Double](param) {
+  override def addValueObserver(callback: Double => Unit) = param
+    .value()
+    .addValueObserver(
+      new DoubleValueChangedCallback {
+        override def valueChanged(newValue: Double) = callback(newValue)
+      }
+    )
   override def get() = param.get
 }
 
@@ -556,12 +648,12 @@ case class TrackBank(bank: bitwig.TrackBank)(implicit ext: MyControllerExtension
     extends Bank(bank, t => new Track(t)) {
   def tracks = items
   val channelCount = new IntValue(bank.channelCount)
-
-  def currentNumberOfTracks = channelCount.get
 }
 
 class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: MyControllerExtension) {
   val name = SettableStringValue(chain.name)
+  val exists = new BoolValue(chain.exists())
+  val end = chain.endOfDeviceChainInsertionPoint()
 
   def createBank(size: Int, matcher: Option[DeviceMatcher] = None) = DeviceBank(chain.createDeviceBank(size), matcher)
   def firstDeviceMatching(matcher: DeviceMatcher) = createBank(1, Some(matcher))(0)
@@ -579,57 +671,71 @@ class Channel(val channel: bitwig.Channel)(implicit ext: MyControllerExtension) 
 
   def select() = channel.selectInMixer()
   val selectAction = ext.createAction(() => name.get(), select)
+
+  val vuMeterRMS = ValueFromLastObserved[Int](
+    0,
+    callback =>
+      channel.addVuMeterObserver(
+        100,
+        -1,
+        false,
+        new IntegerValueChangedCallback {
+          override def valueChanged(newValue: Int) = callback(newValue)
+        }
+      )
+  )
+
+  val vuMeterPeak = ValueFromLastObserved[Int](
+    0,
+    callback =>
+      channel.addVuMeterObserver(
+        100,
+        -1,
+        true,
+        new IntegerValueChangedCallback {
+          override def valueChanged(newValue: Int) = callback(newValue)
+        }
+      )
+  )
 }
 
 class Track(val track: bitwig.Track)(implicit ext: MyControllerExtension) extends Channel(track) {
   val trackType = new StringValue(track.trackType)
   val arm = SettableBoolValue(track.arm)
-  val clipSlot = ClipSlot(track.clipLauncherSlotBank().getItemAt(0))
+  val clipBank = ClipBank(track.clipLauncherSlotBank)
+  val isGroup = new BoolValue(track.isGroup)
+  val groupExpanded = SettableBoolValue(track.isGroupExpanded)
+  val position = new IntValue(track.position)
+
+  def children(size: Int) = TrackBank(track.createTrackBank(size, ext.numSends, ext.numScenes, false))
 
   def sendBank = if (!Set("Master", "Effect").contains(trackType.get())) track.sendBank() else null
+  def duplicate() = track.duplicate()
+
+  def delete() = track.deleteObject()
 }
 
-case class ClipSlot(clipSlot: bitwig.ClipLauncherSlot)(implicit extension: MyControllerExtension) {
-  val isRecording = new BoolValue(clipSlot.isRecording)
-  val exists = new BoolValue(clipSlot.exists)
+case class ClipBank(bank: ClipLauncherSlotBank)(implicit ext: MyControllerExtension)
+    extends Bank(bank, slot => ClipSlot(slot)) {
+  def stop() = bank.stop()
+  val stopAction = bank.stopAction()
 
-  private var hasContentCallback = Option.empty[Boolean => Unit]
-  clipSlot.hasContent.addValueObserver(new BooleanValueChangedCallback {
-    override def valueChanged(newValue: Boolean): Unit = {
-      val oldCallback = hasContentCallback
-      hasContentCallback = Option.empty
-      oldCallback.foreach(_(newValue))
-    }
-  })
-  def doAfterHasContentChanges(callback: Boolean => Unit) {
-    hasContentCallback = Option(hasContentCallback match {
-      case Some(prevCallback) => (hasContent) => { prevCallback(hasContent); callback(hasContent) }
-      case None               => callback
-    })
-  }
+  def clips = items
+}
 
-  private var isPlayingCallback = Option.empty[Boolean => Unit]
-  clipSlot.isPlaying.addValueObserver(new BooleanValueChangedCallback {
-    override def valueChanged(newValue: Boolean): Unit = {
-      val oldCallback = isPlayingCallback
-      isPlayingCallback = Option.empty
-      oldCallback.foreach(_(newValue))
-    }
-  })
-  def doAfterPlayingChanges(callback: Boolean => Unit) {
-    isPlayingCallback = Option(isPlayingCallback match {
-      case Some(prevCallback) => (isPlaying) => { prevCallback(isPlaying); callback(isPlaying) }
-      case None               => callback
-    })
-  }
+case class ClipSlot(clipSlot: bitwig.ClipLauncherSlot)(implicit ext: MyControllerExtension) {
+  val hasClip = new BoolValue(clipSlot.hasContent())
+  val isPlaying = new BoolValue(clipSlot.isPlaying())
+  val isRecording = new BoolValue(clipSlot.isRecording())
+  val exists = new BoolValue(clipSlot.exists())
+  def launch() = clipSlot.launch()
+  def delete() = clipSlot.deleteObject()
+  def record() = clipSlot.record()
 }
 
 case class TrackCursor(override val track: CursorTrack)(implicit extension: MyControllerExtension)
     extends Track(track) {
   val hasNext = new BoolValue(track.hasNext)
-  val isGroup = new BoolValue(track.isGroup)
-  val isGroupExpanded = new SettableBoolValue(track.isGroupExpanded)
-  val position = new IntValue(track.position)
   val isPinned = SettableBoolValue(track.isPinned)
 
   val selectPreviousAction = track.selectPreviousAction()
@@ -637,48 +743,52 @@ case class TrackCursor(override val track: CursorTrack)(implicit extension: MyCo
 
   val parent = new Track(track.createParentTrack(extension.numSends, 1))
 
-  val clipCursor = track.createLauncherCursorClip("CLIP", "Clip", 0, 0)
-  clipCursor.getLoopStart.markInterested
-  clipCursor.getLoopLength.markInterested
-
-  val clipCursorSlot = ClipSlot(clipCursor.clipLauncherSlot)
+  lazy val clipCursor = ClipCursor(track.createLauncherCursorClip("CLIP", "Clip", 0, 0))
+  lazy val deviceCursor = DeviceCursor(track.createCursorDevice())
 
   def loopLastNBarsOfRecordingClip(bars: Int): Unit = {
-    if (!clipCursorSlot.exists()) {
+    if (!clipCursor.exists()) {
       clipCursor.selectFirst()
     }
-    if (!clipCursorSlot.isRecording.get) return
-    val beatsPerBar = extension.transport.beatsPerBar
+    if (!clipCursor.slot.isRecording()) return
+    val beatsPerBar = extension.transport.beatsPerBar()
 
-    val loopLength = clipCursor.getLoopLength.get + extension.transport.remainder
+    val loopLength = clipCursor.loopLength() + extension.transport.tilNextBar.beats
     val endTime = (loopLength / beatsPerBar).round * beatsPerBar
     val startTime = endTime - bars * beatsPerBar
-    clipCursor.getLoopStart.set(startTime)
-    clipCursor.getPlayStart.set(startTime + loopLength - endTime)
-    clipCursor.getLoopLength.set(endTime - startTime)
-    clipCursorSlot.doAfterPlayingChanges(_ => {
-      clipCursor.getLoopLength.set(endTime - startTime)
+    clipCursor.loopStart.set(startTime)
+    clipCursor.playStart.set(startTime + loopLength - endTime)
+    clipCursor.loopLength.set(endTime - startTime)
+    clipCursor.slot.isPlaying.doAfterChanged(_ => {
+      clipCursor.loopLength.set(endTime - startTime)
     })
     if (endTime > loopLength) {
-      clipCursorSlot.clipSlot.launchWithOptions("1", "play_with_quantization")
+      clipCursor.slot.clipSlot.launchWithOptions("1", "play_with_quantization")
     } else {
-      clipCursorSlot.clipSlot.launchWithOptions("none", "continue_with_quantization")
+      clipCursor.slot.clipSlot.launchWithOptions("none", "continue_with_quantization")
     }
   }
 
   def cycleNextTrack() = {
     if (track.hasNext.get) track.selectNext() else track.selectFirst()
   }
+}
 
-  val deviceCursor = Device(track.createCursorDevice())
+case class ClipCursor(clipCursor: PinnableCursorClip)(implicit ext: MyControllerExtension) {
+  val exists = new BoolValue(clipCursor.exists())
+  val loopStart = SettableDoubleValue(clipCursor.getLoopStart)
+  val loopLength = SettableDoubleValue(clipCursor.getLoopLength)
+  val playStart = SettableDoubleValue(clipCursor.getPlayStart())
+  val slot = ClipSlot(clipCursor.clipLauncherSlot())
+
+  def selectFirst() = clipCursor.selectFirst()
 }
 
 abstract class Bank[T, BT <: ObjectProxy](bank: bitwig.Bank[BT], itemCtor: BT => T)(implicit
     ext: MyControllerExtension
 ) {
-  def currentSize = bank.getSizeOfBank()
-  def maxSize = bank.getCapacityOfBank()
-  val itemCount = new IntValue(bank.itemCount())
+  val currentSize = new IntValue(bank.itemCount())
+  def maxSize = bank.getSizeOfBank()
 
   protected val items = List.range(0, maxSize).map(idx => itemCtor(bank.getItemAt(idx)))
 
@@ -687,12 +797,12 @@ abstract class Bank[T, BT <: ObjectProxy](bank: bitwig.Bank[BT], itemCtor: BT =>
 
 case class DeviceBank(bank: bitwig.DeviceBank, matcher: Option[bitwig.DeviceMatcher] = None)(implicit
     ext: MyControllerExtension
-) extends Bank(bank, device => Device(device)) {
+) extends Bank(bank, device => new Device(device)) {
   def devices = items
   matcher.foreach(bank.setDeviceMatcher(_))
 }
 
-case class Device(device: bitwig.Device)(implicit ext: MyControllerExtension) {
+class Device(val device: bitwig.Device)(implicit ext: MyControllerExtension) {
   val name = new StringValue(device.name())
   val presetName = new StringValue(device.presetName())
   val remoteControls = RemoteControls(device.createCursorRemoteControlsPage(8), device)
@@ -712,6 +822,12 @@ case class Device(device: bitwig.Device)(implicit ext: MyControllerExtension) {
     device.createCursorRemoteControlsPage(name, 8, tag),
     device
   )
+}
+
+case class DeviceCursor(override val device: bitwig.CursorDevice)(implicit ext: MyControllerExtension)
+    extends Device(device) {
+  def selectDevice(other: Device) = device.selectDevice(other.device)
+  def selectFirstInSlot(name: String) = device.selectFirstInSlot(name)
 }
 
 case class DeviceLayer(layer: bitwig.DeviceLayer)(implicit ext: MyControllerExtension) extends Channel(layer)
@@ -766,39 +882,39 @@ object Track extends BindingProvider {
       },
       {
         case (((track, bars), action), fxSend) => {
-          track.loopLastNBarsOfRecordingClip(bars)
-          if (fxSend > 0) {
-            val send = track.sendBank.getItemAt(fxSend - 1)
-            send.setImmediately(track.volume.get)
-            send.sendMode().set("PRE")
-            track.mute.set(true)
-          }
-          action match {
-            case None =>
-            case Duplicate => {
-              val pinnedBefore = track.track.isPinned.get
-              track.track.isPinned.set(true)
-              track.track.arm().set(false)
-              track.clipCursorSlot.doAfterPlayingChanges(_ => {
-                track.track.duplicate()
-                track.track.selectNext()
-                track.name.set(s"${track.name.get.dropRight(2)} ${track.name.get.takeRight(2).trim.toInt + 1}")
-                track.arm.set(true)
-                track.mute.set(false)
-                List.range(0, ext.numSends).map(track.sendBank.getItemAt(_)).foreach(_.reset())
-                track.clipCursorSlot.clipSlot.deleteObject()
-                track.clipCursorSlot.doAfterHasContentChanges(_ => {
-                  track.clipSlot.clipSlot.record()
-                  track.clipSlot.doAfterHasContentChanges(_ => {
-                    track.clipSlot.doAfterHasContentChanges(_ => {
-                      track.clipCursor.selectFirst()
-                    })
-                  })
-                })
-                track.track.isPinned.set(pinnedBefore)
-              })
-            }
-          }
+          //   track.loopLastNBarsOfRecordingClip(bars)
+          //   if (fxSend > 0) {
+          //     val send = track.sendBank.getItemAt(fxSend - 1)
+          //     send.setImmediately(track.volume.get)
+          //     send.sendMode().set("PRE")
+          //     track.mute.set(true)
+          //   }
+          //   action match {
+          //     case None =>
+          //     case Duplicate => {
+          //       val pinnedBefore = track.track.isPinned.get
+          //       track.track.isPinned.set(true)
+          //       track.track.arm().set(false)
+          //       track.clipCursorSlot.doAfterPlayingChanges(_ => {
+          //         track.track.duplicate()
+          //         track.track.selectNext()
+          //         track.name.set(s"${track.name.get.dropRight(2)} ${track.name.get.takeRight(2).trim.toInt + 1}")
+          //         track.arm.set(true)
+          //         track.mute.set(false)
+          //         List.range(0, ext.numSends).map(track.sendBank.getItemAt(_)).foreach(_.reset())
+          //         track.clipCursorSlot.clipSlot.deleteObject()
+          //         track.clipCursorSlot.doAfterHasContentChanges(_ => {
+          //           track.clipSlot.clipSlot.record()
+          //           track.clipSlot.doAfterHasContentChanges(_ => {
+          //             track.clipSlot.doAfterHasContentChanges(_ => {
+          //               track.clipCursor.selectFirst()
+          //             })
+          //           })
+          //         })
+          //         track.track.isPinned.set(pinnedBefore)
+          //       })
+          //     }
+          //   }
         }
       }
     ),
@@ -961,8 +1077,50 @@ case class ParameterizedParamBinding[P](
     createParamSetting(settingCtx).map(param)
 }
 
-case class Transport(transport: bitwig.Transport) extends BindingProvider {
+abstract class Enumeration extends scala.Enumeration {
+  class EnumValue(value: bitwig.EnumValue) extends com.garo.Value[Value](value) {
+    protected def addValueObserver(callback: Value => Unit) =
+      value.addValueObserver(new EnumValueChangedCallback {
+        override def valueChanged(newValue: String) = callback(withName(value.get()))
+      })
+    override def get() = withName(value.get())
+  }
+
+  case class SettableEnumValue(value: bitwig.SettableEnumValue) extends EnumValue(value) with SettableValue[Value] {
+    override def set(newValue: Value) = value.set(newValue.toString())
+  }
+}
+
+case class Transport(transport: bitwig.Transport)(implicit ext: MyControllerExtension) extends BindingProvider {
+  val isPlaying = SettableBoolValue(transport.isPlaying())
+  val playPosition = new BeatTimeValue(transport.playPosition())
   val tempo = Parameter(transport.tempo)
+
+  object LaunchQ extends Enumeration {
+    val None = Value("none")
+    val Eight = Value("8")
+    val Four = Value("4")
+    val Two = Value("2")
+    val One = Value("1")
+    val Half = Value("1/2")
+    val Quarter = Value("1/4")
+    val Eigth = Value("1/8")
+    val Sixteenth = Value("1/16")
+  }
+  val defaultLaunchQ = LaunchQ.SettableEnumValue(transport.defaultLaunchQuantization())
+
+  object PostRecordAction extends Enumeration {
+    val Off = Value("off")
+    val PlayRecorded = Value("play_recorded")
+    val RecordNextFreeSlot = Value("record_next_free_slot")
+    val Stop = Value("stop")
+    val ReturnToArrangement = Value("return_to_arrangement")
+    val ReturnToPreviousClip = Value("return_to_previous_clip")
+    val PlayRandom = Value("play_random")
+  }
+  val postRecordAction = PostRecordAction.SettableEnumValue(transport.clipLauncherPostRecordingAction())
+  val postRecordTime = SettableBeatTimeValue(transport.getClipLauncherPostRecordingTimeOffset())
+
   val playAction = transport.playAction()
   val stopAction = transport.stopAction()
   val recordAction = transport.recordAction()
@@ -976,29 +1134,53 @@ case class Transport(transport: bitwig.Transport) extends BindingProvider {
     WrapperParamBinding("Transport - Tempo", transport.tempo)
   )
 
-  def beatsPerBar = transport.timeSignature.numerator.get
-  transport.timeSignature.numerator.markInterested
+  val beatsPerBar = SettableIntValue(transport.timeSignature.numerator)
 
-  def remainder = transport.playPosition.get - (transport.playPosition.get * 4).floor / 4
-
-  var isPlaying = false
-  var currentBar = 0
-  var currentBeat = 0
-
-  def onTransportTick(callback: (Int, Int, Boolean) => Unit) {
-    transport.isPlaying.addValueObserver(new BooleanValueChangedCallback {
-      override def valueChanged(newValue: Boolean) = {
-        isPlaying = newValue; callback(currentBar, currentBeat, isPlaying)
+  def cancelOnPause(cancel: () => Unit) = {
+    var thisCancel = Option.empty[() => Unit]
+    thisCancel = Some(isPlaying.onChanged(isPlaying => {
+      if (!isPlaying) {
+        cancel()
+        thisCancel.foreach(_())
       }
-    })
-    transport.playPosition.addValueObserver(new DoubleValueChangedCallback {
-      override def valueChanged(newValue: Double) = {
-        currentBar = (newValue / transport.timeSignature.numerator.get).floor.toInt
-        currentBeat = newValue.floor.toInt - currentBar * transport.timeSignature.numerator.get
-        callback(currentBar, currentBeat, isPlaying)
-      }
-    })
+    }))
+    cancel
   }
+
+  def onTick(callback: BeatTime => Unit) = {
+    var cancel: () => Unit = null
+    cancel = playPosition.onChanged(playPosition => {
+      if (!isPlaying()) cancel() else callback(playPosition)
+    })
+    cancel
+  }
+
+  def doAt(time: BeatTime, action: () => Unit) = {
+    ext.host.println(s"do at: $time, current: ${playPosition()}")
+    if (time <= playPosition()) { () =>
+      {}
+    } else {
+      var cancel: () => Unit = null
+      cancel = onTick(currentTime => {
+        if (currentTime >= time) {
+          action()
+          cancel()
+        }
+      })
+      cancel
+    }
+  }
+
+  def doBefore(time: BeatTime, action: () => Unit) = {
+    doAt(time - BeatTime.sixteenths(1), action)
+  }
+
+  def doBeforeOffset(time: BeatTime, action: () => Unit) = {
+    doBefore(playPosition() + time, action)
+  }
+
+  def tilNextBar = playPosition().ceilBar - playPosition()
+
 }
 
 case class ControllerExtensionProxy(

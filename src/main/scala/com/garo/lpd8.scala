@@ -157,14 +157,14 @@ case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(
           )
       )
 
-  transport.onTransportTick((bar, beat, isPlaying) => {
+  transport.onTick(beatTime => {
     for ((statusOn, statusOff, data1, data2on, data2off) <- Seq((176, 176, 12, 1, 0), (144, 128, 36, 1, 127))) {
       for (barButton <- Seq.range(0, 4)) {
-        val isOn = isPlaying && barButton == (bar % 4)
+        val isOn = transport.isPlaying() && barButton == (beatTime.bars % 4)
         lpd8Out.sendMidi(if (isOn) statusOn else statusOff, data1 + 4 + barButton, if (isOn) data2on else data2off)
       }
       for (beatButton <- Seq.range(0, 4)) {
-        val isOn = isPlaying && beatButton == beat
+        val isOn = transport.isPlaying() && beatButton == beatTime.beatInBar
         lpd8Out.sendMidi(if (isOn) statusOn else statusOff, data1 + beatButton, if (isOn) data2on else data2off)
       }
     }
