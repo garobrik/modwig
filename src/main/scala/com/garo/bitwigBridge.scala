@@ -124,6 +124,27 @@ case class ModeCtx()(implicit ext: MyControllerExtension) {
   }
 }
 
+case class AbsoluteListenerBindable(listener: Double => Unit) extends AbsoluteHardwarControlBindable {
+  def addBindingWithRange(
+      hardwareControl: AbsoluteHardwareControl,
+      minNormalizedValue: Double,
+      maxNormalizedValue: Double
+  ): AbsoluteHardwareControlBinding = {
+    var bindingCleared = false
+    // hardwareControl
+    //   .value()
+    //   .addValueObserver(new DoubleValueChangedCallback {
+    //     override def valueChanged(newValue: Double) = if (!bindingCleared) listener(newValue)
+    //   })
+    new AbsoluteHardwareControlBinding {
+      override def setMinNormalizedValue(min: Double): Unit = {}
+      override def setMaxNormalizedValue(max: Double): Unit = {}
+      override def setNormalizedRange(min: Double, max: Double): Unit = {}
+      override def removeBinding() = bindingCleared = false
+    }
+  }
+}
+
 abstract class Mode(implicit ext: MyControllerExtension, ctx: ModeCtx) {
   def name: String
   def bindings: Mode.Bindings
@@ -198,6 +219,11 @@ abstract class Mode(implicit ext: MyControllerExtension, ctx: ModeCtx) {
 
 object Mode {
   type Bindings = List[(HardwareControl[_], HardwareBindable)]
+
+  def mergeBindings(a: Bindings, b: Bindings) = {
+    assert(!a.exists { case (binding, _) => b.map(_._1).contains(binding) })
+    a ++ b
+  }
 }
 
 case class Browser(browser: bitwig.PopupBrowser) {
@@ -660,6 +686,7 @@ class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: MyControl
 
   val instrumentDevice = firstDeviceMatching(ext.Matchers.instrument)
   val fxDevice = firstDeviceMatching(ext.Matchers.effect)
+  val primaryDevice = firstDeviceMatching(ext.Matchers.or(ext.Matchers.instrumentOrEffect, InstrumentSelector.matcher))
 }
 
 class Channel(val channel: bitwig.Channel)(implicit ext: MyControllerExtension) extends DeviceChain(channel) {
@@ -729,6 +756,11 @@ case class ClipSlot(clipSlot: bitwig.ClipLauncherSlot)(implicit ext: MyControlle
   val isRecording = new BoolValue(clipSlot.isRecording())
   val exists = new BoolValue(clipSlot.exists())
   def launch() = clipSlot.launch()
+  def launchWith(quantization: Option[Transport.LaunchQ.Value], mode: Option[Transport.LaunchMode.Value]) =
+    clipSlot.launchWithOptions(
+      quantization.map(_.toString()).getOrElse("default"),
+      mode.map(_.toString()).getOrElse("default")
+    )
   def delete() = clipSlot.deleteObject()
   def record() = clipSlot.record()
 }
@@ -740,6 +772,7 @@ case class TrackCursor(override val track: CursorTrack)(implicit extension: MyCo
 
   val selectPreviousAction = track.selectPreviousAction()
   val selectNextAction = track.selectNextAction()
+  def selectChannel(channel: Channel) = track.selectChannel(channel.channel)
 
   val parent = new Track(track.createParentTrack(extension.numSends, 1))
 
@@ -843,7 +876,7 @@ case class Selector(selector: bitwig.ChainSelector, device: Device)(implicit ext
 case class RemoteControls(remoteControls: CursorRemoteControlsPage, device: bitwig.Device)(implicit
     ext: MyControllerExtension
 ) {
-  val controls = (0 until 8).map(remoteControls.getParameter)
+  val controls = List.range(0, 8).map(remoteControls.getParameter)
   val selectedPage = SettableIntValue(remoteControls.selectedPageIndex())
   val visible = SettableBoolValue(device.isRemoteControlsSectionVisible())
 
@@ -1096,29 +1129,9 @@ case class Transport(transport: bitwig.Transport)(implicit ext: MyControllerExte
   val playPosition = new BeatTimeValue(transport.playPosition())
   val tempo = Parameter(transport.tempo)
 
-  object LaunchQ extends Enumeration {
-    val None = Value("none")
-    val Eight = Value("8")
-    val Four = Value("4")
-    val Two = Value("2")
-    val One = Value("1")
-    val Half = Value("1/2")
-    val Quarter = Value("1/4")
-    val Eigth = Value("1/8")
-    val Sixteenth = Value("1/16")
-  }
-  val defaultLaunchQ = LaunchQ.SettableEnumValue(transport.defaultLaunchQuantization())
+  val defaultLaunchQ = Transport.LaunchQ.SettableEnumValue(transport.defaultLaunchQuantization())
 
-  object PostRecordAction extends Enumeration {
-    val Off = Value("off")
-    val PlayRecorded = Value("play_recorded")
-    val RecordNextFreeSlot = Value("record_next_free_slot")
-    val Stop = Value("stop")
-    val ReturnToArrangement = Value("return_to_arrangement")
-    val ReturnToPreviousClip = Value("return_to_previous_clip")
-    val PlayRandom = Value("play_random")
-  }
-  val postRecordAction = PostRecordAction.SettableEnumValue(transport.clipLauncherPostRecordingAction())
+  val postRecordAction = Transport.PostRecordAction.SettableEnumValue(transport.clipLauncherPostRecordingAction())
   val postRecordTime = SettableBeatTimeValue(transport.getClipLauncherPostRecordingTimeOffset())
 
   val playAction = transport.playAction()
@@ -1181,6 +1194,37 @@ case class Transport(transport: bitwig.Transport)(implicit ext: MyControllerExte
 
   def tilNextBar = playPosition().ceilBar - playPosition()
 
+}
+
+object Transport {
+  object LaunchQ extends Enumeration {
+    val None = Value("none")
+    val Eight = Value("8")
+    val Four = Value("4")
+    val Two = Value("2")
+    val One = Value("1")
+    val Half = Value("1/2")
+    val Quarter = Value("1/4")
+    val Eigth = Value("1/8")
+    val Sixteenth = Value("1/16")
+  }
+
+  object LaunchMode extends Enumeration {
+    val FromStart = Value("from_start")
+    val ContinueOrFromStart = Value("continue_or_from_start")
+    val ContinueOrSynced = Value("continue_or_synced")
+    val Synced = Value("synced")
+  }
+
+  object PostRecordAction extends Enumeration {
+    val Off = Value("off")
+    val PlayRecorded = Value("play_recorded")
+    val RecordNextFreeSlot = Value("record_next_free_slot")
+    val Stop = Value("stop")
+    val ReturnToArrangement = Value("return_to_arrangement")
+    val ReturnToPreviousClip = Value("return_to_previous_clip")
+    val PlayRandom = Value("play_random")
+  }
 }
 
 case class ControllerExtensionProxy(
