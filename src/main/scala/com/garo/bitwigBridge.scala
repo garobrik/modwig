@@ -11,7 +11,7 @@ import _root_.java.sql.Wrapper
 import javax.sound.midi.MidiMessage
 
 abstract class MyControllerExtension(implicit val host: ControllerHost) {
-  implicit val extension = this
+  implicit val extension: MyControllerExtension = this
 
   val transport = Transport(host.createTransport())
   val arranger = host.createArranger()
@@ -151,18 +151,11 @@ abstract class Mode(implicit ext: MyControllerExtension, ctx: ModeCtx) {
   def submodes: List[ModeCtx] = List()
 
   def onEnable() = {}
-  private var currentBindings: List[HardwareBinding] = List()
-  private var currentlyBound: List[HardwareBindable] = List()
+  private var currentBindings: List[() => Unit] = List()
   final def enable(): Unit = {
-    if (!currentBindings.isEmpty || !currentlyBound.isEmpty) return
+    if (!currentBindings.isEmpty) return
     onEnable()
-    currentBindings = bindings.map {
-      case (control, bindable) => {
-        if (bindable.isInstanceOf[bitwig.Parameter]) bindable.asInstanceOf[bitwig.Parameter].setIndication(true)
-        control.addBinding(bindable)
-      }
-    }
-    currentlyBound = bindings.map(_._2)
+    currentBindings = bindings.map(_.create())
     submodes.foreach(_.enable())
     ext.host.println(s"enable mode $name")
   }
@@ -171,28 +164,15 @@ abstract class Mode(implicit ext: MyControllerExtension, ctx: ModeCtx) {
   final def disable(): Unit = {
     ext.host.println(s"disable mode $name")
     submodes.foreach(_.disable())
-    currentBindings.foreach(_.removeBinding())
-    currentlyBound.foreach(bindable => {
-      if (bindable.isInstanceOf[bitwig.Parameter]) bindable.asInstanceOf[bitwig.Parameter].setIndication(false)
-    })
-    currentlyBound = List()
+    currentBindings.foreach(_.apply())
     currentBindings = List()
     onDisable()
   }
 
   def refreshBindings(): Unit = {
     if (!currentBindings.isEmpty) {
-      currentBindings.foreach(_.removeBinding())
-      currentlyBound.foreach(bindable => {
-        if (bindable.isInstanceOf[bitwig.Parameter]) bindable.asInstanceOf[bitwig.Parameter].setIndication(false)
-      })
-      currentBindings = bindings.map {
-        case (control, bindable) => {
-          if (bindable.isInstanceOf[bitwig.Parameter]) bindable.asInstanceOf[bitwig.Parameter].setIndication(true)
-          control.addBinding(bindable)
-        }
-      }
-      currentlyBound = bindings.map(_._2)
+      currentBindings.foreach(_.apply())
+      currentBindings = bindings.map(_.create())
     }
   }
 
@@ -217,21 +197,92 @@ abstract class Mode(implicit ext: MyControllerExtension, ctx: ModeCtx) {
   )
 }
 
+abstract class Binding {
+  def create(): () => Unit
+  def control: HardwareControl[_]
+}
+
+case class ButtonBinding(control: HardwareButton, action: HardwareActionBindable) extends Binding {
+  def create() = control.addBinding(action).removeBinding
+}
+
+object ButtonBinding {
+  def list(list: List[(HardwareButton, HardwareActionBindable)]) = list.map(ButtonBinding.apply.tupled)
+}
+
+given Conversion[(HardwareButton, HardwareActionBindable), ButtonBinding] = (tup) => ButtonBinding.apply.tupled(tup)
+
+case class RelativeBinding(
+    control: RelativeHardwareKnob,
+    bindable: RelativeHardwarControlBindable,
+    sensitivity: Double = 1
+) extends Binding {
+  def create() = {
+    bindable match { case param: bitwig.Parameter => param.setIndication(true); case _ => () }
+    val binding = control.addBinding(bindable, sensitivity = sensitivity)
+    () => {
+      bindable match { case param: bitwig.Parameter => param.setIndication(false); case _ => () }
+      binding.removeBinding()
+    }
+  }
+}
+
+object RelativeBinding {
+  def list(list: List[(RelativeHardwareKnob, RelativeHardwarControlBindable)]) = list.map { case (knob, bindable) =>
+    RelativeBinding(knob, bindable)
+  }
+}
+
+given Conversion[(RelativeHardwareKnob, RelativeHardwarControlBindable), RelativeBinding] = (tup) =>
+  RelativeBinding(tup(0), tup(1))
+
+case class AbsoluteBinding(control: AbsoluteHardwareKnob, bindable: AbsoluteHardwarControlBindable) extends Binding {
+  def create() = {
+    bindable match { case param: bitwig.Parameter => param.setIndication(true); case _ => () }
+    val binding = control.addBinding(bindable)
+    () => {
+      bindable match { case param: bitwig.Parameter => param.setIndication(false); case _ => () }
+      binding.removeBinding()
+    }
+  }
+}
+
+object AbsoluteBinding {
+  def list(list: List[(AbsoluteHardwareKnob, AbsoluteHardwarControlBindable)]) = list.map { case (knob, bindable) =>
+    AbsoluteBinding(knob, bindable)
+  }
+}
+
+given Conversion[(AbsoluteHardwareKnob, AbsoluteHardwarControlBindable), AbsoluteBinding] = (tup) =>
+  AbsoluteBinding.apply.tupled(tup)
+
 object Mode {
-  type Bindings = List[(HardwareControl[_], HardwareBindable)]
+  type Bindings = List[Binding]
 
   def mergeBindings(a: Bindings, b: Bindings) = {
-    assert(!a.exists { case (binding, _) => b.map(_._1).contains(binding) })
+    assert(!a.exists(binding => b.map(_.control).contains(binding.control)))
     a ++ b
   }
 }
 
-case class Browser(browser: bitwig.PopupBrowser) {
+case class Browser(browser: bitwig.PopupBrowser)(implicit ext: MyControllerExtension) {
   val commitAction = browser.commitAction()
   val cancelAction = browser.cancelAction()
   val nextFileAction = browser.selectNextFileAction()
   val prevFileAction = browser.selectPreviousFileAction()
-  browser.shouldAudition().set(false)
+
+  val isOpen = BoolValue(browser.exists())
+  val shouldAudtion = SettableBoolValue(browser.shouldAudition())
+  shouldAudtion.set(false)
+
+  val smartCollectionColumn = BrowserFilterColumn(browser.smartCollectionColumn())
+  val tagsColumn = BrowserFilterColumn(browser.tagColumn())
+}
+
+case class BrowserFilterColumn(column: bitwig.BrowserFilterColumn)(implicit ext: MyControllerExtension) {
+  val itemCursor = column.createCursorItem().asInstanceOf[CursorBrowserFilterItem]
+  val itemBank = column.createItemBank(8)
+  StringValue(itemBank.getItemAt(0).name()).onChanged(ext.host.println)
 }
 
 case class Bounds(x: Double, y: Double, w: Double, h: Double)
@@ -245,7 +296,6 @@ sealed abstract class HardwareControl[T <: bitwig.HardwareControl](
   val control = controlFn(name)
 
   def clearBindings() = bindingSource.clearBindings()
-  def addBinding(binding: HardwareBindable) = bindingSource.addBinding(binding)
   def setName(name: String) = control.setName(name)
 
   indexInGroup.foreach(control.setIndexInGroup)
@@ -262,18 +312,19 @@ case class ActionMatcher(
 ) {
   override def toString() = {
     val statusByte = kind match {
-      case ActionMatcher.Note => ShortMidiMessage.NOTE_ON
-      case ActionMatcher.CC   => ShortMidiMessage.CONTROL_CHANGE
-      case ActionMatcher.PC   => ShortMidiMessage.PROGRAM_CHANGE
+      case ActionMatcher.Note   => ShortMidiMessage.NOTE_ON
+      case ActionMatcher.CC     => ShortMidiMessage.CONTROL_CHANGE
+      case ActionMatcher.CCKnob => ShortMidiMessage.CONTROL_CHANGE
+      case ActionMatcher.PC     => ShortMidiMessage.PROGRAM_CHANGE
     }
     val statusCond = channel match {
       case Some(channel) => s"${statusByte + channel} == status"
       case None          => s"$statusByte <= status && status < ${statusByte + 16}"
     }
     val data2Cond = (kind, value) match {
-      case (ActionMatcher.PC, _) => "true"
-      case (_, Some(value))      => s"data2 == $value"
-      case _                     => "data2 > 0"
+      case (ActionMatcher.PC | ActionMatcher.CCKnob, _) => "true"
+      case (_, Some(value))                             => s"data2 == $value"
+      case _                                            => "data2 > 0"
     }
 
     s"$statusCond && data1 == $number && $data2Cond"
@@ -285,6 +336,7 @@ object ActionMatcher {
   case object Note extends ActionKind
   case object CC extends ActionKind
   case object PC extends ActionKind
+  case object CCKnob extends ActionKind
 }
 
 case class HardwareButton(
@@ -303,6 +355,8 @@ case class HardwareButton(
   val nullMatcher = midiPort.createCCActionMatcher(15, 0, 0)
 
   control.pressedAction.setActionMatcher(onMatcher)
+
+  def addBinding(bindable: bitwig.HardwareActionBindable) = bindingSource.addBinding(bindable)
 }
 
 case class AbsoluteHardwareKnob(
@@ -325,9 +379,13 @@ case class AbsoluteHardwareKnob(
   val nullMatcher = midiPort.createAbsoluteCCValueMatcher(0, 0)
 
   control.setAdjustValueMatcher(onMatcher)
+
+  val asButton = HardwareButton(name + "_AS_BUTTON", ActionMatcher(ActionMatcher.CCKnob, ccNum, channel, indexInGroup))
+
+  def addBinding(bindable: bitwig.AbsoluteHardwarControlBindable) = bindingSource.addBinding(bindable)
 }
 
-case class RelativeHardwareControl(
+case class RelativeHardwareKnob(
     name: String,
     ccNum: Int,
     channel: Option[Int] = None,
@@ -349,13 +407,18 @@ case class RelativeHardwareControl(
   val nullMatcher = midiPort.createRelative2sComplementValueMatcher(midiPort.createAbsoluteCCValueMatcher(0, 0), 127)
 
   control.setAdjustValueMatcher(onMatcher)
+
+  val asButton = HardwareButton(name + "_AS_BUTTON", ActionMatcher(ActionMatcher.CCKnob, ccNum, channel, indexInGroup))
+
+  def addBinding(bindable: bitwig.RelativeHardwarControlBindable, sensitivity: Double = 1) =
+    bindable.addBindingWithSensitivity(control, sensitivity)
 }
 
 trait Setting[+T] {
-  def setEnabled(enabled: Boolean)
-  def setShown(shown: Boolean)
+  def setEnabled(enabled: Boolean): Unit
+  def setShown(shown: Boolean): Unit
   def get(): T
-  def onChanged(callback: (T) => Unit)
+  def onChanged(callback: (T) => Unit): Unit
 
   def setEnabledAndShown(enabledAndShown: Boolean) = { setEnabled(enabledAndShown); setShown(enabledAndShown) }
   def enableAndShow() = setEnabledAndShown(true)
@@ -364,27 +427,27 @@ trait Setting[+T] {
   def map[T2](fn: T => T2) = {
     val orig = this
     new ProxySetting[T2] {
-      override def get() = fn(orig.get)
+      override def get() = fn(orig.get())
       override val proxied = List(orig)
     }
   }
 }
 
 trait WritableSetting[T] extends Setting[T] {
-  def set(value: T)
+  def set(value: T): Unit
 }
 
 abstract class ProxySetting[T] extends Setting[T] {
   def proxied: List[Setting[_ <: Any]]
   override def setEnabled(enabled: Boolean) = proxied.foreach(_.setEnabled(enabled))
   override def setShown(shown: Boolean) = proxied.foreach(_.setShown(shown))
-  override def onChanged(callback: T => Unit) = proxied.foreach(_.onChanged(_ => callback(get)))
+  override def onChanged(callback: T => Unit) = proxied.foreach(_.onChanged(_ => callback(get())))
 }
 
 case class PairSetting[A, B](a: Setting[A], b: Setting[B])(implicit settingCtx: SettingCtx)
     extends ProxySetting[(A, B)] {
   override def proxied: List[Setting[_]] = List(a, b)
-  override def get() = (a.get, b.get)
+  override def get() = (a.get(), b.get())
 }
 
 case class SettingCtx(
@@ -502,7 +565,7 @@ case class SignalSetting(name: String)(implicit settingCtx: SettingCtx) extends 
   def get() = {}
   def set(v: Unit) = {}
   override def onChanged(callback: Unit => Unit) = signal.addSignalObserver(new NoArgsCallback {
-    override def call() = callback()
+    override def call() = callback(())
   })
 }
 
@@ -517,7 +580,7 @@ case class HeaderSetting(text: String)(implicit settingCtx: SettingCtx) extends 
 }
 
 abstract class Observable[T] {
-  protected def addValueObserver(callback: T => Unit)
+  protected def addValueObserver(callback: T => Unit): Unit
   addValueObserver(t => {
     callbacks.foreach(_(t))
   })
@@ -553,7 +616,7 @@ case class ValueFromLastObserved[T](initial: T, valueObserverCallback: (T => Uni
 }
 
 trait SettableValue[T] extends Value[T] {
-  def set(newValue: T)
+  def set(newValue: T): Unit
 }
 
 class DoubleValue(value: bitwig.DoubleValue) extends Value[Double](value) {
@@ -679,7 +742,6 @@ case class TrackBank(bank: bitwig.TrackBank)(implicit ext: MyControllerExtension
 class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: MyControllerExtension) {
   val name = SettableStringValue(chain.name)
   val exists = new BoolValue(chain.exists())
-  val end = chain.endOfDeviceChainInsertionPoint()
 
   def createBank(size: Int, matcher: Option[DeviceMatcher] = None) = DeviceBank(chain.createDeviceBank(size), matcher)
   def firstDeviceMatching(matcher: DeviceMatcher) = createBank(1, Some(matcher))(0)
@@ -687,6 +749,9 @@ class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: MyControl
   val instrumentDevice = firstDeviceMatching(ext.Matchers.instrument)
   val fxDevice = firstDeviceMatching(ext.Matchers.effect)
   val primaryDevice = firstDeviceMatching(ext.Matchers.or(ext.Matchers.instrumentOrEffect, InstrumentSelector.matcher))
+
+  val start = InsertionPoint(chain.startOfDeviceChainInsertionPoint())
+  val end = InsertionPoint(chain.endOfDeviceChainInsertionPoint())
 }
 
 class Channel(val channel: bitwig.Channel)(implicit ext: MyControllerExtension) extends DeviceChain(channel) {
@@ -697,7 +762,7 @@ class Channel(val channel: bitwig.Channel)(implicit ext: MyControllerExtension) 
   val active = SettableBoolValue(channel.isActivated)
 
   def select() = channel.selectInMixer()
-  val selectAction = ext.createAction(() => name.get(), select)
+  val selectAction = ext.createAction(() => name.get(), () => select())
 
   val vuMeterRMS = ValueFromLastObserved[Int](
     0,
@@ -839,7 +904,6 @@ class Device(val device: bitwig.Device)(implicit ext: MyControllerExtension) {
   val name = new StringValue(device.name())
   val presetName = new StringValue(device.presetName())
   val remoteControls = RemoteControls(device.createCursorRemoteControlsPage(8), device)
-  val replaceAction = device.replaceDeviceInsertionPoint.browseAction()
   val exists = new BoolValue(device.exists())
   val windowOpen = SettableBoolValue(device.isWindowOpen())
   def equalsValue(other: Device) = new BoolValue(device.createEqualsValue(other.device))
@@ -855,6 +919,10 @@ class Device(val device: bitwig.Device)(implicit ext: MyControllerExtension) {
     device.createCursorRemoteControlsPage(name, 8, tag),
     device
   )
+
+  val before = InsertionPoint(device.beforeDeviceInsertionPoint())
+  val replace = InsertionPoint(device.replaceDeviceInsertionPoint())
+  val after = InsertionPoint(device.afterDeviceInsertionPoint())
 }
 
 case class DeviceCursor(override val device: bitwig.CursorDevice)(implicit ext: MyControllerExtension)
@@ -895,7 +963,7 @@ object Track extends BindingProvider {
     ParameterizedCallbackBinding[TrackCursor](
       "Track - Cycle Next",
       ctx => trackCursorSelectorSetting("Track")(ctx),
-      _.cycleNextTrack
+      _.cycleNextTrack()
     ),
     ParameterizedCallbackBinding[(((TrackCursor, Int), PostAction), Int)](
       "Track - Loop Recording Clip",
@@ -976,6 +1044,30 @@ object Track extends BindingProvider {
     )
 }
 
+case class InsertionPoint(insertionPoint: bitwig.InsertionPoint)(implicit ext: MyControllerExtension) {
+  val browseAction = insertionPoint.browseAction()
+  val browseIfClosedAction = ext.createAction(
+    "Browse If Closed",
+    () => {
+      if !ext.browser.isOpen() then browseAction.invoke()
+    }
+  )
+
+  val browseOrCancelAction = ext.createAction(
+    "Browse or Cancel",
+    () => {
+      if ext.browser.isOpen() then ext.browser.cancelAction.invoke() else browseAction.invoke()
+    }
+  )
+
+  val browseOrCommitAction = ext.createAction(
+    "Browse or Commit",
+    () => {
+      if ext.browser.isOpen() then ext.browser.commitAction.invoke() else browseAction.invoke()
+    }
+  )
+}
+
 case class SelectorSetting[T](
     name: String,
     possibleSelections: Map[String, SettingCtx => Setting[T]],
@@ -984,22 +1076,22 @@ case class SelectorSetting[T](
     extends WritableSetting[T] {
   val selection = EnumSetting(name, possibleSelections.keys.toList.sorted, initialSelection)
   val selectionConfigs = possibleSelections.map({ case (name, ctor) => name -> ctor(settingCtx.indented) }).toMap
-  selectionConfigs.values.foreach(_.disableAndHide)
-  selectionConfigs.get(selection.get).foreach(_.enableAndShow)
+  selectionConfigs.values.foreach(_.disableAndHide())
+  selectionConfigs.get(selection.get()).foreach(_.enableAndShow())
 
   var firstTime = true
   selection.onChanged(newselection => {
     if (!firstTime) {
-      selectionConfigs.values.foreach(_.disableAndHide)
-      selectionConfigs.get(newselection).foreach(_.enableAndShow)
+      selectionConfigs.values.foreach(_.disableAndHide())
+      selectionConfigs.get(newselection).foreach(_.enableAndShow())
     }
     firstTime = false
   })
 
-  override def get() = selectionConfigs(selection.get).get
+  override def get() = selectionConfigs(selection.get()).get()
   override def set(newSelection: T) = selection.set(
     selectionConfigs
-      .find({ case (name, config) => config.get == selection })
+      .find({ case (name, config) => config.get() == selection })
       .getOrElse(throw new Exception(s"couldn't find $newSelection!!"))
       ._1
   )
@@ -1007,34 +1099,34 @@ case class SelectorSetting[T](
   override def setEnabled(enabled: Boolean) = {
     selection.setEnabled(enabled)
     selectionConfigs.values.foreach(_.setEnabled(false))
-    selectionConfigs.get(selection.get).foreach(_.setEnabled(enabled))
+    selectionConfigs.get(selection.get()).foreach(_.setEnabled(enabled))
   }
   override def setShown(shown: Boolean) = {
     selection.setShown(shown)
     selectionConfigs.values.foreach(_.setShown(false))
-    selectionConfigs.get(selection.get).foreach(_.setShown(shown))
+    selectionConfigs.get(selection.get()).foreach(_.setShown(shown))
   }
   override def onChanged(callback: T => Unit) = {
-    (List(selection) ++ selectionConfigs.values).foreach(_.onChanged(_ => callback(get)))
+    (List(selection) ++ selectionConfigs.values).foreach(_.onChanged(_ => callback(get())))
   }
 }
 
 sealed trait BindableSpec {
   def isAction: Boolean
-  def createSetting()(implicit settingCtx: SettingCtx): Setting[HardwareBindable]
+  def createSetting()(implicit settingCtx: SettingCtx): Setting[bitwig.HardwareBindable]
   def name: String
 }
 
 object BindableSpec {
   def selectorSetting(name: String, possibleBindings: List[BindableSpec], initialBinding: Option[BindableSpec])(implicit
       settingCtx: SettingCtx
-  ): WritableSetting[Option[HardwareBindable]] = {
+  ): WritableSetting[Option[bitwig.HardwareBindable]] = {
     SelectorSetting(
       name,
       possibleBindings
         .map(binding => (binding.name -> ((ctx: SettingCtx) => binding.createSetting()(ctx).map(Option(_)))))
         .toMap ++ Map(
-        noneBinding -> ((ctx: SettingCtx) => ConstantSetting(Option.empty[HardwareBindable]))
+        noneBinding -> ((ctx: SettingCtx) => ConstantSetting(Option.empty[bitwig.HardwareBindable]))
       ),
       noneBinding
     )
@@ -1087,13 +1179,14 @@ case class ParameterizedCallbackBinding[P](
   override def isAction = true
 
   override def createSetting()(implicit settingCtx: SettingCtx) = {
-    new Setting[HardwareBindable] {
+    new Setting[bitwig.HardwareBindable] {
       val configSetting = createParamSetting(settingCtx)
-      val rawAction = ext.createAction(() => name, () => action(configSetting.get))
+      val rawAction = ext.createAction(() => name, () => action(configSetting.get()))
       override def get() = rawAction
       override def setEnabled(enabled: Boolean) = configSetting.setEnabled(enabled)
       override def setShown(shown: Boolean) = configSetting.setShown(shown)
-      override def onChanged(callback: HardwareBindable => Unit) = configSetting.onChanged(_ => callback(rawAction))
+      override def onChanged(callback: bitwig.HardwareBindable => Unit) =
+        configSetting.onChanged(_ => callback(rawAction))
     }
   }
 }
@@ -1101,7 +1194,7 @@ case class ParameterizedCallbackBinding[P](
 case class ParameterizedParamBinding[P](
     override val name: String,
     createParamSetting: SettingCtx => Setting[P],
-    param: P => HardwareBindable
+    param: P => bitwig.HardwareBindable
 )(implicit ext: MyControllerExtension)
     extends BindableSpec {
   override def isAction = true

@@ -24,8 +24,8 @@
 		</dependency>
 		<dependency>
 			<groupId>org.scala-lang</groupId>
-			<artifactId>scala-library</artifactId>
-			<version>2.12.16</version>
+			<artifactId>scala3-library_3</artifactId>
+			<version>3.3.1</version>
 		</dependency>
 	</dependencies>
 
@@ -43,12 +43,6 @@
 							<goal>add-source</goal>
 							<goal>compile</goal>
 						</goals>
-						<configuration>
-              				<args>
-                				<arg>-dependencyfile</arg>
-                				<arg>${project.build.directory}/.scala_dependencies</arg>
-              				</args>
-            			</configuration>
 					</execution>
 				</executions>
 			</plugin>
