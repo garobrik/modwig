@@ -10,9 +10,10 @@ import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api._
 
 import com.garo.ControllerExtensionProxy
+import com.garo.ControllerExtension
 import java.{util => ju}
 
-case class TestExtension(_host: ControllerHost) extends MyControllerExtension()(_host) {
+case class TestExtension(_host: ControllerHost) extends ControllerExtension()(_host) {
   def supers(cls: Class[_]): Seq[Class[_]] = {
     val sup = cls.getSuperclass
     if (sup != null) sup +: supers(sup) else Seq()

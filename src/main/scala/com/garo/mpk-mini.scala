@@ -1,10 +1,10 @@
 package com.garo
 
-import com.garo._;
-import com.bitwig.extension.api._;
-import com.bitwig.extension.controller._;
-import com.bitwig.extension.api.util.midi._;
-import com.bitwig.extension.callback._;
+import com.garo._
+import com.bitwig.extension.api._
+import com.bitwig.extension.controller.{ControllerExtension => _, _}
+import com.bitwig.extension.api.util.midi._
+import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api.{
   AbsoluteHardwareKnob => _,
   HardwareButton => _,
@@ -13,13 +13,25 @@ import com.bitwig.extension.controller.api.{
   Device => _,
   DeviceChain => _,
   Track => _,
+  ControllerHost => _,
   _
-};
-import com.bitwig.extension.controller.{api => bitwig};
+}
+import com.bitwig.extension.controller.{api => bitwig}
+import org.http4s.blaze.server._
 
 import java.util.UUID
+import org.http4s.HttpRoutes
+import org.http4s._
+import org.http4s.dsl.io._
+import cats.effect._
+import concurrent.duration._
+import org.http4s.websocket.WebSocketFrame
+import cats.effect.unsafe.IORuntime
+import cats.effect.unsafe.implicits.global
+import java.io.StringWriter
+import java.io.PrintWriter
 
-case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension()(_host) {
+case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExtension()(_host) {
   implicit val modeCtx: ModeCtx = ModeCtx()
   implicit val MPKin: MidiIn = host.getMidiInPort(0)
   implicit val surface: HardwareSurface = host.createHardwareSurface()
@@ -105,19 +117,19 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
       () => {
         val currentModeIdx = modes.indexOf(modeCtx.current.getOrElse(modes.head))
         val nextModeIdx = (currentModeIdx + 1) % modes.length
-        modes(nextModeIdx).setAction.invoke()
+        modes(nextModeIdx).setAction()
       }
     )
   }
   pedal
 
   object metronome {
-    val track = TrackCursor(host.createCursorTrack("METRONOME", "Metronome", 0, 1, true))
+    val track = TrackCursor("METRONOME", "Metronome", true)
     val toggle = createAction(
-      "Toggle Metronome",
+      "Metronome",
       () => {
         track.clipBank(0).launchWith(Some(Transport.LaunchQ.None), Some(Transport.LaunchMode.Synced))
-        track.mute.toggleAction.invoke()
+        track.mute.toggle()
       }
     )
   }
@@ -133,24 +145,28 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
 
   object mainModes {
     val default: Mode = new Mode {
-      def name = "Default"
+      def name = "Session Control"
 
-      def bindings =
+      override def dependents = List(browser.isOpen)
+
+      override def bindings =
         List(
-          ccPads(0) -> selectedTrackMode.replaceAction,
-          ccPads(2) -> selectedTrack.deviceCursor.before.browseOrCommitAction,
-          ccPads(3) -> selectedTrack.deviceCursor.after.browseOrCancelAction,
+          ccPads(0) -> (if !browser.isOpen() then selectedTrackMode.replaceAction
+                        else selectedTrack.start.browseAction),
+          ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
+          ccPads(2) -> selectedTrack.deviceCursor.after.browseAction,
+          ccPads(3) -> selectedTrack.end.browseAction,
           ccPads(4) -> loops(0).triggerAction,
           ccPads(5) -> metronome.toggle,
-          ccPads(6) -> transport.tapTempoAction,
-          ccPads(7) -> transport.playAction,
-          knobs(0) -> selectedTrack.track,
-          knobs(1) -> selectedTrack.deviceCursor.device,
+          ccPads(6) -> (if !browser.isOpen() then transport.tapTempo else browser.commitAction),
+          ccPads(7) -> (if !browser.isOpen() then transport.playAction else browser.cancelAction),
+          knobs(0) -> selectedTrack,
+          knobs(1) -> selectedTrack.deviceCursor,
           knobs(2).asButton -> selectedTrack.deviceCursor.replace.browseIfClosedAction,
-          knobs(2) -> browser.browser,
-          knobs(3) -> selectedTrack.volume.param,
-          RelativeBinding(knobs(4), transport.tempo.param, sensitivity = 0.1),
-          knobs(7) -> masterTrack.volume.param
+          knobs(2) -> browser,
+          knobs(3) -> selectedTrack.volume,
+          RelativeBinding(knobs(4), transport.tempo, sensitivity = 0.1),
+          knobs(7) -> masterTrack.volume
         )
 
     }
@@ -159,24 +175,24 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
       val device = selectedTrack.deviceCursor
       val joystickPage = device.createTaggedRemoteControlsPage("XY", "xy")
 
-      override def name = selectedTrack.name()
+      override def name = "Track Control"
       override def onEnable() = {
         device.remoteControls.visible.set(true)
       }
 
       override def bindings =
         RelativeBinding.list(leftSix(knobs).zip(leftSix(device.remoteControls.controls))) ++
-          ButtonBinding.list(ccPads.slice(4, 8).zip(device.remoteControls.selectPageAction)) ++
+          ButtonBinding.list((ccPads.slice(4, 8) ++ ccPads.slice(1, 4)).zip(device.remoteControls.selectPageAction)) ++
           AbsoluteBinding.list(joystick.mods.zip(joystickPage.controls)) ++ List(
             ccPads(0) -> default.replaceAction,
-            knobs(3) -> selectedTrack.volume.param,
-            knobs(7) -> masterTrack.volume.param
+            knobs(3) -> selectedTrack.volume,
+            knobs(7) -> masterTrack.volume
           )
 
     }
 
     val tryLoopDelete = preferences.getBooleanSetting("Try Loop Delete", "Experimental", false)
-    val loopsTrack = TrackCursor(host.createCursorTrack("LOOPS_GROUP", "Loops Group", numSends, numScenes, true))
+    val loopsTrack = TrackCursor("LOOPS_GROUP", "Loops Group", true)
     val loopTracks = loopsTrack.children(ccPads.length)
     case class LoopMode(idx: Int) extends Mode {
       val track = loopTracks(idx)
@@ -205,7 +221,7 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
         val actions = List(1, 2, 3, 4, 6, 8, 12, 16).map(length =>
           createAction(
             () => s"Set Length To $length",
-            () => { transport.postRecordTime.set(BeatTime.bars(length)); popAction.invoke() }
+            () => { transport.postRecordTime.set(BeatTime.bars(length)); popAction() }
           )
         )
 
@@ -266,7 +282,7 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
           } else {
             triggerClip()
           }
-          transport.playAction.invoke()
+          transport.playAction()
         }
       )
 
@@ -275,10 +291,10 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
         ccPads(5) -> sendMidiActions(1),
         ccPads(6) -> sendMidiActions(2),
         ccPads(7) -> sendMidiActions(3),
-        ccPads(0) -> track.mute.toggleAction,
-        ccPads(1) -> track.solo.toggleAction,
+        ccPads(0) -> track.mute.toggle,
+        ccPads(1) -> track.solo.toggle,
         ccPads(2) -> setLengthMode.pushAction,
-        knobs(7) -> track.volume.param
+        knobs(7) -> track.volume
       )
     }
     val loops = List.range(0, ccPads.length).map(LoopMode.apply)
@@ -299,6 +315,47 @@ case class MPKminiExtension(_host: ControllerHost) extends MyControllerExtension
     },
     1000
   )
+
+  def uiState() = {
+    try
+      ujson
+        .Obj(
+          "pads" -> ujson.Arr(ccPads.take(8).map(_.toJson()): _*),
+          "knobs" -> ujson.Arr(knobs.take(8).map(_.toJson()): _*),
+          "mode" -> modeCtx.current.map(_.name).getOrElse(""),
+          "browserResults" -> (if !browser.isOpen() then null
+                               else browser.resultsColumn.toJson()),
+          "tracks" -> allTracks.toJson()
+        )
+        .toString
+    catch
+      case e =>
+        val stringWriter = new StringWriter()
+        e.printStackTrace(new PrintWriter(stringWriter))
+        stringWriter.toString()
+  }
+
+  val (server, shutdown) = BlazeServerBuilder[IO]
+    .bindHttp(8080, "localhost")
+    .withHttpWebSocketApp(ws =>
+      HttpRoutes
+        .of[IO] { case _ =>
+          val send: fs2.Stream[IO, WebSocketFrame] =
+            fs2.Stream
+              .awakeEvery[IO](10.milliseconds)
+              .evalMap(_ => IO(WebSocketFrame.Text(uiState())))
+          val receive: fs2.Pipe[IO, WebSocketFrame, Unit] =
+            in => in.evalMap(frameIn => IO(println("in " + frameIn.length)))
+
+          ws.build(send, receive)
+        }
+        .orNotFound
+    )
+    .allocated
+    .unsafeRunSync()
+
+  override def exit() =
+    shutdown.unsafeRunSync()
 
   documentState
     .getSignalSetting("do it", "do it", "do it")
@@ -347,18 +404,18 @@ object MPKmini {
       ) ++ Array[Byte](12) // transpose
 }
 
-abstract class Serializable {
+abstract class Bytes {
   def toBytes: Array[Byte]
 }
 
-sealed abstract class Aftertouch extends Serializable {}
+sealed abstract class Aftertouch extends Bytes {}
 object Aftertouch {
   case object Off extends Aftertouch { override def toBytes = Array(0) }
   case object Channel extends Aftertouch { override def toBytes = Array(1) }
   case object Polyphonic extends Aftertouch { override def toBytes = Array(2) }
 }
 
-sealed abstract class Program extends Serializable {}
+sealed abstract class Program extends Bytes {}
 object Program {
   case object RAM extends Program { override def toBytes = Array(0) }
   case class Number(num: Byte) extends Program { override def toBytes = Array(num) }
@@ -411,5 +468,6 @@ class MPKminiExtensionDefinition extends ControllerExtensionDefinition {
     }
   }
 
-  override def createInstance(host: ControllerHost) = ControllerExtensionProxy(MPKminiExtension.apply, this, host)
+  override def createInstance(host: bitwig.ControllerHost) =
+    ControllerExtensionProxy(MPKminiExtension.apply, this, host)
 }

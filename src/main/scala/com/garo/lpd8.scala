@@ -10,9 +10,10 @@ import com.bitwig.extension.controller.api._
 import com.bitwig.extension.controller.{api => bitwig}
 
 import com.garo.ControllerExtensionProxy
+import com.garo.ControllerExtension
 import _root_.java.util.function.Supplier
 
-case class LPD8Extension(_host: ControllerHost) extends MyControllerExtension()(_host) {
+case class LPD8Extension(_host: ControllerHost) extends ControllerExtension()(_host) {
   val lpd8In = host.getMidiInPort(0)
   val lpd8Out = host.getMidiOutPort(0)
 

@@ -6,25 +6,25 @@ import com.bitwig.extension.controller.{api => bitwig};
 import java.util.UUID
 
 abstract class SpecificDevice[T] {
-  def matcher(implicit ext: MyControllerExtension): DeviceMatcher
+  def matcher(implicit ext: ControllerExtension): DeviceMatcher
   def of(device: Device): T
-  def of(track: Track)(implicit ext: MyControllerExtension): T
+  def of(track: Track[_])(implicit ext: ControllerExtension): T
   def insert(insertionPoint: InsertionPoint): Unit
 }
 
 class SpecificVST3Device[T](ctor: (SpecificPluginDevice, Device) => T, val id: String) extends SpecificDevice[T] {
-  def matcher(implicit ext: MyControllerExtension) = ext.host.createVST3DeviceMatcher(id)
+  def matcher(implicit ext: ControllerExtension) = ext.host.createVST3DeviceMatcher(id)
   def of(device: Device): T = ctor(device.device.createSpecificVst3Device(id), device)
-  def of(track: Track)(implicit ext: MyControllerExtension): T = of(track.firstDeviceMatching(matcher))
+  def of(track: Track[_])(implicit ext: ControllerExtension): T = of(track.firstDeviceMatching(matcher))
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertVST3Device(id)
 }
 
 class SpecificBitwigDevice[T](ctor: (bitwig.SpecificBitwigDevice, Device) => T, idString: String)
     extends SpecificDevice[T] {
   val id = UUID.fromString(idString)
-  def matcher(implicit ext: MyControllerExtension) = ext.host.createBitwigDeviceMatcher(id)
+  def matcher(implicit ext: ControllerExtension) = ext.host.createBitwigDeviceMatcher(id)
   def of(device: Device): T = ctor(device.device.createSpecificBitwigDevice(id), device)
-  def of(track: Track)(implicit ext: MyControllerExtension): T = of(track.firstDeviceMatching(matcher))
+  def of(track: Track[_])(implicit ext: ControllerExtension): T = of(track.firstDeviceMatching(matcher))
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertBitwigDevice(id)
 }
 

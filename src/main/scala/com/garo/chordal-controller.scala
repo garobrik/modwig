@@ -9,9 +9,11 @@ import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api._
 import com.bitwig.extension.controller.{api => bitwig}
 
+import com.garo.ControllerExtension
+
 case class ChordalControllerExtension(
     _host: ControllerHost
-) extends MyControllerExtension()(_host) {
+) extends ControllerExtension()(_host) {
   // lazy val noteInput = host.getMidiInPort(0).createNoteInput("Instrument", "000000")
   // lazy val doc = host.getDocumentState()
 
