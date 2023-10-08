@@ -33,9 +33,10 @@ abstract class ControllerExtension(implicit val host: ControllerHost) {
   val selectedTrack = trackCursors(0)
   selectedTrack.clipCursor
   selectedTrack.deviceCursor
-  val allTracks = TrackBank(host.createTrackBank(128, numSends, numScenes))
-  val mainTrackBank = TrackBank(host.createMainTrackBank(128, numSends, numScenes))
-  val fxTrackBank = TrackBank(host.createEffectTrackBank(128, numScenes))
+  val allTracks = TrackBank(host.createTrackBank(16, numSends, numScenes))
+  allTracks.tracks.map(_.devices.devices.map(_.isSelected))
+  val mainTrackBank = TrackBank(host.createMainTrackBank(16, numSends, numScenes))
+  val fxTrackBank = TrackBank(host.createEffectTrackBank(16, numScenes))
   val masterTrack = new Track(host.createMasterTrack(numScenes))
 
   val blockSize = preferences.getNumberSetting("Max Block Size", "Audio", 1, 50, 1, "ms", 24)
@@ -230,6 +231,10 @@ object Mode {
     assert(!a.exists(binding => b.map(_.control).contains(binding.control)))
     a ++ b
   }
+}
+
+abstract class ObjectProxy(obj: bitwig.ObjectProxy) {
+  val exists = BoolValue(obj.exists())
 }
 
 case class Browser(browser: bitwig.PopupBrowser)(implicit ext: ControllerExtension)
@@ -447,6 +452,12 @@ case class RelativeHardwareKnob(
       bindings = bindings.filter(_ != bindable)
       binding.removeBinding()
     }
+  }
+
+  override def toJson() = {
+    val sup = super.toJson()
+    sup.update("bindings", (bindings ++ asButton.bindings).map(_.toJson()))
+    sup
   }
 }
 
@@ -693,6 +704,14 @@ abstract class Value[T](value: bitwig.Value[_ <: ValueChangedCallback]) extends 
   value.markInterested()
 }
 
+object Observable {
+  def apply[T](t: T) =
+    new Observable[T] {
+      override def get() = t
+      override protected def addValueObserver(callback: T => Unit) = {}
+    }
+}
+
 case class ValueFromLastObserved[T](initial: T, valueObserverCallback: (T => Unit) => Unit) extends Observable[T] {
   var lastVal = initial
   override def get() = lastVal
@@ -783,6 +802,8 @@ class Parameter(param: bitwig.Parameter, name: Option[() => String] = None)
   override val value = this
   override val displayedValue = StringValue(param.displayedValue())
   override def bindable = param
+
+  val exists = BoolValue(param.exists())
 }
 
 class IntValue(value: bitwig.IntegerValue) extends Value[Int](value) {
@@ -908,18 +929,23 @@ class Track[T <: bitwig.Track](val track: T)(implicit ext: ControllerExtension) 
   val isGroup = BoolValue(track.isGroup)
   val groupExpanded = SettableBoolValue(track.isGroupExpanded)
   val position = IntValue(track.position)
+  val duplicate = ext.createAction(() => s"Duplicate ${name()}", () => track.duplicate())
+  val isSelected =
+    if ext.selectedTrack == null then Observable(false) else BoolValue(track.createEqualsValue(ext.selectedTrack.track))
+  lazy val devices = createBank(10)
 
   def children(size: Int) = TrackBank(track.createTrackBank(size, ext.numSends, ext.numScenes, false))
 
   def sendBank = if (!Set("Master", "Effect").contains(trackType)) track.sendBank() else null
-  def duplicate() = track.duplicate()
 
   def delete() = track.deleteObject()
 
   def toJson() = ujson.Obj(
     "name" -> name(),
     "arm" -> arm(),
-    "type" -> trackType()
+    "type" -> trackType(),
+    "isSelected" -> isSelected(),
+    "devices" -> devices.toJson()
   )
 }
 
@@ -970,7 +996,7 @@ class TrackCursor(id: String, cursorName: String, follow: Boolean)(implicit ext:
   val parent = new Track(track.createParentTrack(ext.numSends, 1))
 
   lazy val clipCursor = ClipCursor(track.createLauncherCursorClip("CLIP", "Clip", 0, 0))
-  lazy val deviceCursor = DeviceCursor(cursorName + " Device", track.createCursorDevice())
+  lazy val deviceCursor = DeviceCursor("Device", track.createCursorDevice())
 
   def loopLastNBarsOfRecordingClip(bars: Int): Unit = {
     if (!clipCursor.exists()) {
@@ -1012,7 +1038,7 @@ case class ClipCursor(clipCursor: PinnableCursorClip)(implicit ext: ControllerEx
   def selectFirst() = clipCursor.selectFirst()
 }
 
-class Bank[T <: Serializable, BT <: ObjectProxy](bank: bitwig.Bank[BT], itemCtor: BT => T)(implicit
+class Bank[T <: Serializable, BT <: bitwig.ObjectProxy](bank: bitwig.Bank[BT], itemCtor: BT => T)(implicit
     ext: ControllerExtension
 ) {
   val currentSize = new IntValue(bank.itemCount())
@@ -1022,7 +1048,7 @@ class Bank[T <: Serializable, BT <: ObjectProxy](bank: bitwig.Bank[BT], itemCtor
 
   def apply(idx: Int) = items(idx)
 
-  def toJson() = ujson.Arr((0 until currentSize()).map(apply).map(_.toJson()))
+  def toJson() = ujson.Arr((0 until currentSize()).map(apply).map(_.toJson()): _*)
 }
 
 case class DeviceBank(bank: bitwig.DeviceBank, matcher: Option[bitwig.DeviceMatcher] = None)(implicit
@@ -1039,7 +1065,9 @@ class Device(val device: bitwig.Device)(implicit ext: ControllerExtension) exten
   val exists = BoolValue(device.exists())
   val windowOpen = SettableBoolValue(device.isWindowOpen())
   val enabled = SettableBoolValue(device.isEnabled())
-  def equalsValue(other: Device) = new BoolValue(device.createEqualsValue(other.device))
+  def equalsValue(other: Device) = BoolValue(device.createEqualsValue(other.device))
+  lazy val isSelected =
+    if ext.selectedTrack == null then Observable(false) else equalsValue(ext.selectedTrack.deviceCursor)
 
   lazy val selector = Selector(device.createChainSelector(), this)
   lazy val layers = {
@@ -1058,8 +1086,9 @@ class Device(val device: bitwig.Device)(implicit ext: ControllerExtension) exten
   val after = InsertionPoint(device.afterDeviceInsertionPoint(), "After")
 
   def toJson() = ujson.Obj(
-    "name" -> name(),
-    "enabled" -> enabled()
+    "name" -> presetName(),
+    "enabled" -> enabled(),
+    "isSelected" -> isSelected()
   )
 }
 
@@ -1081,18 +1110,26 @@ case class DeviceLayer(layer: bitwig.DeviceLayer)(implicit ext: ControllerExtens
 case class Selector(selector: bitwig.ChainSelector, device: Device)(implicit ext: ControllerExtension) {
   val activeChain = DeviceLayer(selector.activeChain())
   val activeChainIndex = SettableIntValue(selector.activeChainIndex())
-  val activeIndexParam = InstrumentSelector.of(device).index
   val chainCount = new IntValue(selector.chainCount())
   val exists = new BoolValue(selector.exists())
 }
 
-case class RemoteControls(remoteControls: CursorRemoteControlsPage, device: bitwig.Device)(implicit
+class RemoteControl(remoteControl: bitwig.RemoteControl)(implicit ext: ControllerExtension)
+    extends Parameter(remoteControl) {
+  val name = SettableStringValue(remoteControl.name())
+  val isBeingMapped = SettableBoolValue(remoteControl.isBeingMapped())
+
+  val startMapping = ext.createAction("Start Mapping", () => isBeingMapped.set(true))
+}
+
+class RemoteControls(remoteControls: CursorRemoteControlsPage, device: bitwig.Device)(implicit
     ext: ControllerExtension
 ) {
-  val controls = List.range(0, 8).map(remoteControls.getParameter).map(param => Parameter(param))
+  val controls = List.range(0, 8).map(remoteControls.getParameter).map(ctl => RemoteControl(ctl))
   val selectedPage = SettableIntValue(remoteControls.selectedPageIndex())
   val visible = SettableBoolValue(device.isRemoteControlsSectionVisible())
   val pageNames = StringArrayValue(remoteControls.pageNames())
+  val pageCount = IntValue(remoteControls.pageCount())
 
   def apply(idx: Int) = controls(idx)
 
@@ -1103,6 +1140,8 @@ case class RemoteControls(remoteControls: CursorRemoteControlsPage, device: bitw
         () => selectedPage.set(idx)
       )
     )
+
+  val createPage = ext.createAction("Create Page", remoteControls.createPresetPageAction())
 }
 
 case class InsertionPoint(insertionPoint: bitwig.InsertionPoint, name: String)(implicit ext: ControllerExtension) {

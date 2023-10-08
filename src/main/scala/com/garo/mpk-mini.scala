@@ -155,7 +155,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
                         else selectedTrack.start.browseAction),
           ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
           ccPads(2) -> selectedTrack.deviceCursor.after.browseAction,
-          ccPads(3) -> selectedTrack.end.browseAction,
+          ccPads(3) -> (if !browser.isOpen() then selectedTrack.duplicate else selectedTrack.end.browseAction),
           ccPads(4) -> loops(0).triggerAction,
           ccPads(5) -> metronome.toggle,
           ccPads(6) -> (if !browser.isOpen() then transport.tapTempo else browser.commitAction),
@@ -175,14 +175,26 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       val device = selectedTrack.deviceCursor
       val joystickPage = device.createTaggedRemoteControlsPage("XY", "xy")
 
-      override def name = "Track Control"
+      override def name = "Device Control"
       override def onEnable() = {
         device.remoteControls.visible.set(true)
       }
 
+      override def dependents = device.remoteControls.pageCount +: device.remoteControls.controls.map(_.exists)
+
       override def bindings =
-        RelativeBinding.list(leftSix(knobs).zip(leftSix(device.remoteControls.controls))) ++
-          ButtonBinding.list((ccPads.slice(4, 8) ++ ccPads.slice(1, 4)).zip(device.remoteControls.selectPageAction)) ++
+        leftSix(knobs).zip(leftSix(device.remoteControls.controls)).map { case (knob, control) =>
+          if control.exists() then RelativeBinding(knob, control)
+          else ButtonBinding(knob.asButton, control.startMapping)
+        } ++
+          ButtonBinding.list(
+            (ccPads.slice(4, 8) ++ ccPads.slice(2, 4))
+              .zip(
+                device.remoteControls.selectPageAction.take(device.remoteControls.pageCount()) ++ (0 until 8).map(_ =>
+                  device.remoteControls.createPage
+                )
+              )
+          ) ++
           AbsoluteBinding.list(joystick.mods.zip(joystickPage.controls)) ++ List(
             ccPads(0) -> default.replaceAction,
             knobs(3) -> selectedTrack.volume,
@@ -323,7 +335,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           "pads" -> ujson.Arr(ccPads.take(8).map(_.toJson()): _*),
           "knobs" -> ujson.Arr(knobs.take(8).map(_.toJson()): _*),
           "mode" -> modeCtx.current.map(_.name).getOrElse(""),
-          "browserResults" -> (if !browser.isOpen() then null
+          "browserResults" -> (if !browser.isOpen() then ujson.Null
                                else browser.resultsColumn.toJson()),
           "tracks" -> allTracks.toJson()
         )
