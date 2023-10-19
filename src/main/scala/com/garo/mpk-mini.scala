@@ -14,6 +14,9 @@ import com.bitwig.extension.controller.api.{
   DeviceChain => _,
   Track => _,
   ControllerHost => _,
+  SpecificDevice => _,
+  Parameter => _,
+  HardwareActionBindable => _,
   _
 }
 import com.bitwig.extension.controller.{api => bitwig}
@@ -30,6 +33,7 @@ import cats.effect.unsafe.IORuntime
 import cats.effect.unsafe.implicits.global
 import java.io.StringWriter
 import java.io.PrintWriter
+import com.garo.Mode.Bindings
 
 case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExtension()(_host) {
   implicit val modeCtx: ModeCtx = ModeCtx()
@@ -41,6 +45,10 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
   val noteInput = MPKin.createNoteInput("Keys", "80????", "90????")
   val padInput = MPKin.createNoteInput("Pads", "81????", "91????", "A1????")
+  MPKin.setMidiCallback(new ShortMidiDataReceivedCallback {
+    override def midiReceived(statusByte: Int, data1: Int, data2: Int) =
+      host.println(s"${statusByte}:${data1}:${data2}")
+  })
 
   def leftSix[T](l: List[T]) = l.slice(0, 3) ++ l.slice(4, 7)
 
@@ -57,11 +65,17 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         )
       )
 
+  val bKnobs = List
+    .range(8, 16)
+    .map(idx => RelativeHardwareKnob(s"K${idx + 1}", 20 + idx, channel = Some(0), indexInGroup = Some(idx - 8)))
+
   val ccPads =
     List(20, 30).flatMap(idx => (idx + 4 until idx + 8) ++ (idx until idx + 4)).zipWithIndex.map { case (cc, idx) =>
       HardwareButton(
         s"CC${idx + 1}",
         ActionMatcher(ActionMatcher.CC, cc, channel = Some(1)),
+        Some(ActionMatcher(ActionMatcher.CC, cc, value = Some(0), channel = Some(1))),
+        Some(ActionMatcher(ActionMatcher.CCKnob, cc, channel = Some(1))),
         indexInGroup = Some(idx % 8),
         bounds = if (idx < 8) Some(Bounds(((idx % 4) + 1) * 220 / 4, ((idx / 4) * 2 + 1) * 20, 20, 20)) else None
       )
@@ -76,7 +90,18 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       )
     }
 
+  val notePads =
+    List(0, 8).flatMap(idx => (idx + 4 until idx + 8) ++ (idx until idx + 4)).zipWithIndex.map { case (note, idx) =>
+      HardwareButton(
+        s"Note${idx + 1}",
+        ActionMatcher(ActionMatcher.NoteOn, idx, channel = Some(1)),
+        Some(ActionMatcher(ActionMatcher.NoteOff, idx, channel = Some(1))),
+        indexInGroup = Some(idx % 8)
+      )
+    }
+
   object joystick {
+    given NoteInput = noteInput
     val leftMod = AbsoluteHardwareKnob(s"JLMod", 30, channel = Some(0))
     val rightMod = AbsoluteHardwareKnob(s"JRMod", 31, channel = Some(0))
     val upMod = AbsoluteHardwareKnob(s"JUMod", 32, channel = Some(0))
@@ -166,6 +191,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           knobs(2) -> browser,
           knobs(3) -> selectedTrack.volume,
           RelativeBinding(knobs(4), transport.tempo, sensitivity = 0.1),
+          RelativeBinding(knobs(5), transport.postRecordTime, sensitivity = 4.0),
           knobs(7) -> masterTrack.volume
         )
 
@@ -180,31 +206,279 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         device.remoteControls.visible.set(true)
       }
 
-      override def dependents = device.remoteControls.pageCount +: device.remoteControls.controls.map(_.exists)
+      override def dependents = deviceModes.map(_.device.exists)
 
-      override def bindings =
-        leftSix(knobs).zip(leftSix(device.remoteControls.controls)).map { case (knob, control) =>
-          if control.exists() then RelativeBinding(knob, control)
-          else ButtonBinding(knob.asButton, control.startMapping)
-        } ++
-          ButtonBinding.list(
+      override def submodes = List(deviceModes.find(_.device.exists()).getOrElse(genericMode))
+
+      override def bindings = List(
+        ccPads(0) -> default.replaceAction,
+        knobs(3) -> selectedTrack.volume,
+        knobs(7) -> masterTrack.volume
+      )
+
+      val genericMode = new Mode {
+        override def name = "Generic Device"
+        override def dependents = device.remoteControls.pageCount +: device.remoteControls.controls.map(_.exists)
+        override def bindings =
+          AbsoluteBinding.list(joystick.mods.zip(joystickPage.controls)) ++ leftSix(knobs)
+            .zip(leftSix(device.remoteControls.controls))
+            .map { case (knob, control) =>
+              if control.exists() then RelativeBinding(knob, control)
+              else ButtonBinding(knob.asButton, control.startMapping)
+            } ++ ButtonBinding.list(
             (ccPads.slice(4, 8) ++ ccPads.slice(2, 4))
               .zip(
                 device.remoteControls.selectPageAction.take(device.remoteControls.pageCount()) ++ (0 until 8).map(_ =>
                   device.remoteControls.createPage
                 )
               )
-          ) ++
-          AbsoluteBinding.list(joystick.mods.zip(joystickPage.controls)) ++ List(
-            ccPads(0) -> default.replaceAction,
-            knobs(3) -> selectedTrack.volume,
-            knobs(7) -> masterTrack.volume
+          )
+      }
+
+      abstract class DeviceMode[T <: SpecificDevice](val device: T) extends Mode {
+        def name = device.device.name()
+      }
+      val deviceModes = List[DeviceMode[_]](
+        new DeviceMode(Diva.Device(device)) {
+          import this.device._
+          override def dependents =
+            List(pageSwitch, pageIdxs(0), pageIdxs(1), oscModel, hpfModel, vcfModel, env1Model, env2Model)
+          val pageSwitch = Settable(0)
+          val pageIdxs = List(Settable(0), Settable(0))
+
+          def oscKnobs = oscModel.displayedValue() match {
+            case "Triple VCO" =>
+              List(
+                "VCO1" -> List(vco1.shape, vco1.volume, vco1.tune, vco1.fm, filterFM),
+                "VCO2" -> List(vco2.shape, vco2.volume, vco2.tune, vco2.sync),
+                "VCO3" -> List(vco3.shape, vco3.volume, vco3.tune, vco3.sync),
+                "Filter" -> List(feedback, noise, pinkWhite, filterFreq, filterResonance, filterKeyFollow)
+              )
+            case _ => host.println(oscModel.displayedValue()); List()
+          }
+
+          def envKnobs = List
+            .range(0, 2)
+            .map(idx =>
+              s"Env ${idx + 1}" -> List(
+                env(idx).attack,
+                env(idx).decay,
+                env(idx).sustain,
+                env(idx).release,
+                env(idx).velocity,
+                env(idx).keyFollow
+              )
+            )
+
+          def modKnobs = List(
+            "Tune Mod" -> (vcos.map(_.tuneMod) ++ List(
+              tuneModDepth,
+              tuneModSrc
+            )),
+            "Shape Mod" -> (vcos.map(_.shapeMod) ++ List(
+              shapeModDepth,
+              shapeModSrc
+            )),
+            "Filt Mod" -> List(
+              filtModSrc,
+              filtMod2Src,
+              resModSrc,
+              filtModDepth,
+              filtMod2Depth,
+              resModDepth
+            )
           )
 
+          def keyboardKnobs = "Keyboard" -> List(polyMode, voiceStack, drive, glide, vibrato, filterKeyFollow)
+
+          def lfoKnobs = List
+            .range(0, 2)
+            .map(idx =>
+              s"LFO ${idx + 1}" -> List(
+                lfo(idx).waveform,
+                lfo(idx).delay,
+                lfo(idx).restart,
+                lfo(idx).sync,
+                lfo(idx).rate,
+                lfo(idx).phase
+              )
+            )
+
+          def allKnobs = List(oscKnobs :+ envKnobs(0) :+ keyboardKnobs, modKnobs ++ List(envKnobs(1)) ++ lfoKnobs)
+          val togglePageAction = createAction("Switch Page", () => pageSwitch.set(1 - pageSwitch()))
+          val selectPageActions = (0 until 2).map(switchIdx =>
+            (0 until 6).map(idx =>
+              createAction(
+                () => allKnobs(switchIdx)(idx)._1,
+                () => pageIdxs(switchIdx).set(idx),
+                Gettable(() => if pageIdxs(switchIdx)().min(allKnobs(switchIdx).length - 1) == idx then 1.0 else 0.0)
+              )
+            )
+          )
+
+          def bindings = RelativeBinding.list(
+            leftSix(knobs).zip(
+              allKnobs(pageSwitch())(pageIdxs(pageSwitch())().min(allKnobs(pageSwitch()).length - 1))._2
+            )
+          ) ++ ButtonBinding.list(
+            (ccPads(4) -> togglePageAction) +: (ccPads.slice(5, 8) ++ ccPads.slice(1, 4))
+              .zip(selectPageActions(pageSwitch()).take(allKnobs(pageSwitch()).length))
+          ) ++ List(
+            joystick.upMod.CCBinding(1),
+            joystick.leftMod.CCBinding(2),
+            joystick.rightMod.CCBinding(11)
+            // joystick.leftMod.PitchBinding(-1),
+            // joystick.rightMod.PitchBinding(1),
+          )
+        },
+        new DeviceMode(Chromaphone.Device(device)) {
+          val layer = this.device.layer(0)
+          import layer._
+          override def dependents = resonator
+            .map(_.objectType) ++ resonatorHit ++ List(
+            noiseFiltType,
+            noiseEnvType,
+            lfoType,
+            malletMod,
+            noiseMod,
+            pageIdx
+          )
+
+          val pageIdx = Settable(0)
+          val malletMod = SettableBool(false, "Mallet", "Mod")
+          val noiseMod = SettableBool(false, "Noise", "Mod")
+          val resonatorHit = resonator.map(_ => SettableBool(false, "Object", "Hit Pos"))
+
+          def knobPages: List[(String, (Option[HardwareActionBindable], List[Parameter]))] = resonator
+            .zip(resonatorHit)
+            .map { (res, hit) =>
+              s"Object ${res.name}" -> (
+                Some(hit.toggle),
+                if !hit() then
+                  List(
+                    res.objectType,
+                    if res.isTube then res.radius else res.density,
+                    res.release,
+                    res.decay,
+                    res.decayKeyTrack,
+                    res.decayVeloTrack
+                  )
+                else
+                  List(
+                    res.hitPos,
+                    res.tone,
+                    res.material,
+                    res.lowCut,
+                    res.hitPosVeloTrack,
+                    res.hitPosRand
+                  )
+              )
+            } ++ List(
+            "Mallet" -> (
+              Some(malletMod.toggle),
+              if !malletMod() then
+                List(
+                  malletStiffness,
+                  malletNoise,
+                  malletVol,
+                  malletColor,
+                  malletVolDirect
+                )
+              else
+                List(
+                  malletStiffnessKeyTrack,
+                  malletNoiseKeyTrack,
+                  malletVolKeyTrack,
+                  malletStiffnessVeloTrack,
+                  malletNoiseVeloTrack,
+                  malletVolVeloTrack
+                )
+            ),
+            "Noise" -> (
+              Some(noiseMod.toggle),
+              if !noiseMod() then
+                List(
+                  noiseFiltFreq,
+                  noiseDensity,
+                  noiseVol,
+                  noiseFiltType,
+                  if noiseFiltType.displayedValue() == "HP+LP" then noiseFiltWidth else noiseFiltQ,
+                  noiseVolDirect
+                )
+              else
+                List(
+                  noiseFiltFreqKey,
+                  noiseDensityKey,
+                  noiseVolKeyTrack,
+                  noiseFiltFreqVelo,
+                  noiseDensityVelo,
+                  noiseVolVeloTrack
+                )
+            ),
+            "LFO" -> (Option.empty, List(
+              lfoType,
+              lfoSyncRate,
+              lfoDelay,
+              noiseVolLFO,
+              noiseDensityLFO,
+              noiseFiltFreqLFO
+            )),
+            "Env" -> (Option.empty, List(
+              noiseEnvA,
+              noiseEnvD,
+              noiseEnvS,
+              noiseEnvR,
+              noiseFiltFreqEnv,
+              noiseDensityEnv
+            )),
+            "Balance" -> (Option.empty, List(balance, unisonOn, coupled, balanceKeyFollow, vibratoAmount, gain))
+          )
+
+          def pads = ccPads.slice(4, 8) ++ ccPads.slice(1, 4)
+          val selectPageAction = pads.zipWithIndex.map { (_, idx) =>
+            createAction(
+              () => knobPages(idx)._1,
+              () => pageIdx.set(idx),
+              Gettable(() => if pageIdx() == idx then 1.0 else 0.0)
+            )
+          }
+
+          override def bindings = RelativeBinding.list(knobPages(pageIdx()) match {
+            case (name, (_, params)) => leftSix(knobs).zip(params)
+          }) ++ ButtonBinding.list(pads.zip(knobPages.zipWithIndex.map {
+            case ((_, (Some(action), _)), idx) if idx == pageIdx() => action
+            case (_, idx)                                          => selectPageAction(idx)
+          }))
+        },
+        new DeviceMode(DrumSynth.Device(device)) {
+          import this.device._
+
+          val instIdx = Settable[Either[Int, Int]](Left(0))
+          val setInst =
+            (0 until 8).map(idx => createAction(() => model(idx).displayedValue(), () => instIdx.set(Left(idx))))
+          val setInstB =
+            (0 until 8).map(idx => createAction(() => model(idx).displayedValue(), () => instIdx.set(Right(idx))))
+
+          override def dependents = List(instIdx)
+
+          override def bindings =
+            RelativeBinding.list(
+              leftSix(knobs).zip(
+                instIdx() match {
+                  case Left(idx) =>
+                    List(instrument(idx), params(idx)(0), velocity(idx), model(idx), params(idx)(1), gain(idx))
+                  case Right(idx) => List.range(2, 8).map(params(idx)(_))
+                }
+              )
+            ) ++ List.range(0, 8).map(idx => ButtonBinding(notePads(idx), setInstB(idx), setInst(idx)))
+        }
+      )
     }
 
     val tryLoopDelete = preferences.getBooleanSetting("Try Loop Delete", "Experimental", false)
     val loopsTrack = TrackCursor("LOOPS_GROUP", "Loops Group", true)
+    val loopCursor = TrackCursor("LOOP_CURSOR", "Loop Cursor", true)
+    loopCursor.clipCursor
     val loopTracks = loopsTrack.children(ccPads.length)
     case class LoopMode(idx: Int) extends Mode {
       val track = loopTracks(idx)
@@ -215,13 +489,6 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
       def currentLoop = loops(Math.max(loops.currentSize() - 2, 0))
       def nextLoop = loops(loops.currentSize() - 1)
-
-      val sendMidiActions = (20 until 28).map(idx =>
-        createAction(
-          () => s"Send Midi CC ${idx}",
-          () => track.track.sendMidi(ShortMidiMessage.CONTROL_CHANGE, idx, 127)
-        )
-      )
 
       override def onEnable() = {
         track.select()
@@ -245,64 +512,83 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       val triggerAction = createAction(
         "Trigger",
         () => {
-          def triggerClip(offset: Int = 0): Unit = {
-            var vuMeterReadings = Seq.empty[Int]
-            currentIsSilent = Option(() => vuMeterReadings.sum.toDouble / vuMeterReadings.size.toDouble < 5)
-            var vuMeterCancel = Option.empty[() => Unit]
-            val currentNextLoop = loops((loops.currentSize() - 1) + offset)
-            host.println(s"next loop pos: ${currentNextLoop.position()}")
-            currentNextLoop.duplicate()
-
-            transport.cancelOnPause(
-              currentNextLoop
-                .clipBank(0)
-                .isRecording
-                .doAfterChanged(isRecording => {
-                  if (isRecording) {
-                    vuMeterCancel = Some(transport.onTick(_ => {
-                      vuMeterReadings = fxTrack.vuMeterRMS() +: vuMeterReadings
-                    }))
-                  }
-                })
-            )
-            currentNextLoop.clipBank(0).record()
-            val transportCancel =
-              transport.doBeforeOffset(
-                transport.postRecordTime() + transport.tilNextBar,
-                () => {
-                  vuMeterCancel.foreach(_())
-                  var offset = 0
-                  if (tryLoopDelete.get() && currentIsSilent.getOrElse(() => false)()) {
-                    host.println(s"deleting ${currentNextLoop.position()}")
-                    currentNextLoop.delete()
-                    offset = -1
-                  }
-                  triggerClip(offset)
-                }
-              )
-            triggerCancel = Some(() => { vuMeterCancel.foreach(_()); transportCancel(); })
-          }
-          if (currentLoop.clipBank(0).isRecording()) {
-            triggerCancel.foreach(_())
-            nextLoop.clipBank.stop()
-            nextLoop.clipBank(0).delete()
-            if (currentIsSilent.getOrElse(() => false)()) {
-              currentLoop.delete()
-            } else if (transport.postRecordAction.get() == Transport.PostRecordAction.Off) {
-              currentLoop.clipBank(0).launch()
-            }
+          val currentCurrentLoop = currentLoop
+          val currentCurrentClip = currentCurrentLoop.clipBank(0)
+          val currentNextLoop = nextLoop
+          val currentNextClip = currentNextLoop.clipBank(0)
+          if (transport.postRecordTime.get().beats == 0 && currentCurrentClip.isRecording()) {
+            currentCurrentLoop.clipBank(0).launch()
+            transport.postRecordTime.set(loopCursor.clipCursor.loopLength().ceilBar)
           } else {
-            triggerClip()
+            if (transport.postRecordTime.get().beats == 0) {
+              loopCursor.isPinned.set(true)
+              loopCursor.selectChannel(currentNextLoop)
+            }
+            currentNextClip.record()
+            currentNextClip.isPlaying.doAfterChanged(isPlaying =>
+              if (isPlaying) {
+                currentNextLoop.arm.set(false)
+              }
+            )
+            currentNextLoop.duplicate()
           }
-          transport.playAction()
+
+          // def triggerClip(offset: Int = 0): Unit = {
+          //   var vuMeterReadings = Seq.empty[Int]
+          //   currentIsSilent = Option(() => vuMeterReadings.sum.toDouble / vuMeterReadings.size.toDouble < 5)
+          //   var vuMeterCancel = Option.empty[() => Unit]
+          //   val currentNextLoop = loops((loops.currentSize() - 1) + offset)
+          //   host.println(s"next loop pos: ${currentNextLoop.position()}")
+          //   currentNextLoop.duplicate()
+
+          //   transport.cancelOnPause(
+          //     currentNextLoop
+          //       .clipBank(0)
+          //       .isRecording
+          //       .doAfterChanged(isRecording => {
+          //         if (isRecording) {
+          //           vuMeterCancel = Some(transport.onTick(_ => {
+          //             vuMeterReadings = fxTrack.vuMeterRMS() +: vuMeterReadings
+          //           }))
+          //         }
+          //       })
+          //   )
+          //   currentNextLoop.clipBank(0).record()
+          //   val transportCancel =
+          //     transport.doBeforeOffset(
+          //       transport.postRecordTime() + transport.tilNextBar,
+          //       () => {
+          //         vuMeterCancel.foreach(_())
+          //         val offset = if tryLoopDelete.get() && currentIsSilent.getOrElse(() => false)() then {
+          //           host.println(s"deleting ${currentNextLoop.position()}")
+          //           currentNextLoop.delete()
+          //           -1
+          //         } else 0
+          //         triggerClip(offset)
+          //       }
+          //     )
+          //   triggerCancel = Some(() => { vuMeterCancel.foreach(_()); transportCancel(); })
+          // }
+
+          // if (currentLoop.clipBank(0).isRecording()) {
+          //   triggerCancel.foreach(_())
+          //   nextLoop.clipBank.stop()
+          //   nextLoop.clipBank(0).delete()
+          //   if (currentIsSilent.getOrElse(() => false)()) {
+          //     currentLoop.delete()
+          //   } else if (transport.postRecordAction.get() == Transport.PostRecordAction.Off) {
+          //     currentLoop.clipBank(0).launch()
+          //   }
+          // } else {
+          //   triggerClip()
+          // }
+
+          // transport.playAction()
         }
       )
 
       override def bindings = RelativeBinding.list(knobs.take(7).zip(track.fxDevice.remoteControls.controls)) ++ List(
         ccPads(4) -> triggerAction,
-        ccPads(5) -> sendMidiActions(1),
-        ccPads(6) -> sendMidiActions(2),
-        ccPads(7) -> sendMidiActions(3),
         ccPads(0) -> track.mute.toggle,
         ccPads(1) -> track.solo.toggle,
         ccPads(2) -> setLengthMode.pushAction,
@@ -348,35 +634,62 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   }
 
   val (server, shutdown) = BlazeServerBuilder[IO]
-    .bindHttp(8080, "localhost")
+    .bindHttp(8080, "0.0.0.0")
     .withHttpWebSocketApp(ws =>
       HttpRoutes
-        .of[IO] { case _ =>
-          val send: fs2.Stream[IO, WebSocketFrame] =
-            fs2.Stream
-              .awakeEvery[IO](10.milliseconds)
-              .evalMap(_ => IO(WebSocketFrame.Text(uiState())))
-          val receive: fs2.Pipe[IO, WebSocketFrame, Unit] =
-            in => in.evalMap(frameIn => IO(println("in " + frameIn.length)))
+        .of[IO] {
+          case _ -> Root / "ws" =>
+            val send: fs2.Stream[IO, WebSocketFrame] =
+              fs2.Stream
+                .awakeEvery[IO](10.milliseconds)
+                .evalMap(_ => IO(WebSocketFrame.Text(uiState())))
+            val receive: fs2.Pipe[IO, WebSocketFrame, Unit] =
+              in => in.evalMap(frameIn => IO(println("in " + frameIn.length)))
 
-          ws.build(send, receive)
+            ws.build(send, receive)
+          case request @ GET -> path =>
+            StaticFile
+              .fromResource(
+                "/web/" + (if path.toString == "/" then "/index.html" else path.toString),
+                req = Some(request)
+              )
+              .getOrElseF(NotFound())
         }
         .orNotFound
     )
     .allocated
     .unsafeRunSync()
 
-  override def exit() =
-    shutdown.unsafeRunSync()
+  override def exit() = {
+    host.println("shutting down!")
+    shutdown.unsafeRunAsync {
+      case Right(_) => host.println("shut down!")
+      case _        =>
+    }
+
+  }
+
+  // documentState
+  //   .getSignalSetting("do it", "do it", "do it")
+  //   .addSignalObserver(() => {
+  //     host.showPopupNotification("Doing it")
+  //     host.println(
+  //       MPKmini.program(List("K1", "K2", "Kebab3", "K4", "K5", "K6", "K7", "K8")).map(_.toString).mkString(", ")
+  //     )
+  //     MPKout.sendSysex(MPKmini.program(List("K1", "K2", "Kebab3", "K4", "K5", "K6", "K7", "K8")))
+  //   })
 
   documentState
-    .getSignalSetting("do it", "do it", "do it")
+    .getSignalSetting("Update Cursors", "Update Cursors", "Update Cursors")
     .addSignalObserver(() => {
-      host.showPopupNotification("Doing it")
-      host.println(
-        MPKmini.program(List("K1", "K2", "Kebab3", "K4", "K5", "K6", "K7", "K8")).map(_.toString).mkString(", ")
-      )
-      MPKout.sendSysex(MPKmini.program(List("K1", "K2", "Kebab3", "K4", "K5", "K6", "K7", "K8")))
+      allTracks.tracks.find(_.name() == "Metronome").foreach { track =>
+        metronome.track.isPinned.set(true)
+        metronome.track.selectChannel(track)
+      }
+      allTracks.tracks.find(_.name() == "Loops").foreach { track =>
+        mainModes.loopsTrack.isPinned.set(true)
+        mainModes.loopsTrack.selectChannel(track)
+      }
     })
 }
 

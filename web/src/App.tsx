@@ -12,8 +12,8 @@ import { Property } from 'csstype';
 const ThemeContext = createContext({
   bg: '#f6f5f4' satisfies Property.Color,
   fg: '#c64600' satisfies Property.Color,
-  blur: 15,
-  distance: 5,
+  blur: 0.6,
+  distance: 0.3,
   intensity: 0.4,
   space: 1,
   roundness: 0.5,
@@ -32,18 +32,31 @@ const Theme = ({
   </ThemeContext.Provider>
 );
 
+const transformControlName = (name: string) =>
+  /[AB] \w+: (.+)/.exec(name)?.at(1) ?? name;
+
 type State = {
-  pads: Control[];
+  pads: Button[];
   knobs: Control[];
   mode: string;
   browserResults: BrowserResult[] | null;
   tracks: Track[];
 };
+type TrackType =
+  | 'Group'
+  | 'Instrument'
+  | 'Audio'
+  | 'Hybrid'
+  | 'Effect'
+  | 'Master';
 type Track = {
   name: string;
   arm: boolean;
+  mute: boolean;
+  isChild: boolean;
   isSelected: boolean;
-  type: 'Group' | 'Instrument' | 'Audio' | 'Hybrid' | 'Effect' | 'Master';
+  type: TrackType;
+  parentType: TrackType;
   devices: Device[];
 };
 type Device = {
@@ -58,6 +71,9 @@ type BrowserResult = {
 type Control = {
   name: string;
   bindings: Binding[];
+};
+type Button = Control & {
+  isPressed: boolean;
 };
 type Binding = {
   name: string;
@@ -74,7 +90,11 @@ const usePluginConnection = () => {
   >('CLOSED');
   const [state, setState] = useState<State | null>(null);
   useEffect(() => {
-    const socket = new WebSocket('ws://localhost:8080');
+    const socket = new WebSocket(
+      `ws://${
+        isDev() ? `${window.location.hostname}:8080` : window.location.host
+      }/ws`
+    );
     socket.onopen = (ev) => {
       setStatus('OPEN');
     };
@@ -102,6 +122,7 @@ const usePluginConnection = () => {
 };
 
 export const App = () => {
+  const rootRef = useRef<HTMLDivElement>(null);
   const { state } = usePluginConnection();
   const [theme, setTheme] = useState(useTheme());
   const updateTheme: UIConfigProps['updateTheme'] = (k) => ({
@@ -120,6 +141,7 @@ export const App = () => {
     <Theme {...theme}>
       <AppStateContext.Provider value={state}>
         <div
+          ref={rootRef}
           style={{
             height: '100vh',
             flexDirection: 'column',
@@ -128,13 +150,16 @@ export const App = () => {
           }}
         >
           {/* <UIConfig updateTheme={updateTheme} /> */}
+          {!useIsFullscreen() && (
+            <button onClick={() => rootRef.current?.requestFullscreen()}>
+              ⛶
+            </button>
+          )}
           <div
             style={{
               flex: 1,
               flexDirection: 'column',
               justifyContent: 'space-around',
-              padding: 20,
-              rowGap: 20,
               position: 'relative',
             }}
           >
@@ -199,39 +224,45 @@ const Tracks = () => {
   return (
     <Box
       style={{
-        flex: 1,
         justifyContent: 'space-around',
-        columnGap: 20,
-        padding: 0,
+        alignItems: 'flex-start',
       }}
       neuShadow={false}
+      space="lg"
     >
-      {state.tracks.map((track) => (
-        <Box
-          style={{
-            flex: 1,
-            flexDirection: 'column',
-            justifyContent: 'flex-start',
-          }}
-          space="sm"
-          neuShadow={{ inset: track.isSelected }}
-        >
-          <Text>{track.name}</Text>
-          {track.devices.map((device) => (
-            <Box
-              neuShadow={{
-                distance: 2,
-                intensity: 0.3,
-                blur: 5,
-                inset: device.isSelected,
-              }}
-              space="sm"
-            >
-              <Text size="md">{device.name}</Text>
-            </Box>
-          ))}
-        </Box>
-      ))}
+      {state.tracks
+        .filter(
+          (track) =>
+            ['Effect', 'Master'].every((type) => type !== track.type) &&
+            ['Loop', 'Metronome'].every((name) => !track.name.startsWith(name))
+        )
+        .map((track) => (
+          <Box
+            key={track.name}
+            style={{
+              flex: 1,
+              flexDirection: 'column',
+              justifyContent: 'flex-start',
+            }}
+            space="md"
+            neuShadow={{ inset: track.isSelected }}
+          >
+            <Text>{track.name}</Text>
+            {track.devices.map((device) => (
+              <Box
+                neuShadow={{
+                  distance: 0.15,
+                  intensity: 0.3,
+                  blur: 0.3,
+                  inset: device.isSelected,
+                }}
+                space="sm"
+              >
+                <Text size="md">{device.name}</Text>
+              </Box>
+            ))}
+          </Box>
+        ))}
     </Box>
   );
 };
@@ -248,9 +279,11 @@ const Bindings = () => {
         justifyContent: 'space-around',
       }}
     >
-      <div
+      <Box
+        neuShadow={false}
+        space="lg"
         style={{
-          columnGap: '20px',
+          alignItems: 'stretch',
         }}
       >
         <div
@@ -261,8 +294,12 @@ const Bindings = () => {
             gap: `${theme.space}vw`,
           }}
         >
-          {state.pads.map(({ bindings: [binding] }) => (
-            <Pad text={binding?.name} />
+          {state.pads.map(({ isPressed, bindings: [binding] }) => (
+            <Pad
+              isPressed={isPressed || binding?.value === 1}
+              isHalfPressed={binding?.value === 0.5}
+              text={binding?.name}
+            />
           ))}
         </div>
         <div
@@ -278,25 +315,38 @@ const Bindings = () => {
               (binding) => binding?.name.length > 0
             );
             return (
-              <Knob text={binding?.name ?? ''} percentage={binding?.value} />
+              <Knob
+                name={binding?.name ?? ''}
+                value={binding?.displayedValue}
+                percentage={binding?.value}
+              />
             );
           })}
         </div>
-      </div>
+      </Box>
     </div>
   );
 };
 
 type PadProps = {
+  isPressed: boolean;
+  isHalfPressed: boolean;
   text: string;
 };
-const Pad = ({ text }: PadProps) => {
+const Pad = ({ isPressed, isHalfPressed, text }: PadProps) => {
   return (
-    <div
+    <Box
       style={{
         aspectRatio: '1/1',
-        borderRadius: 30,
-        ...useNeuBoxShadow(),
+      }}
+      neuShadow={{
+        inset: isPressed,
+        ...(!isHalfPressed
+          ? {}
+          : {
+              distance: 0,
+              blur: 0,
+            }),
       }}
     >
       <Text
@@ -308,15 +358,16 @@ const Pad = ({ text }: PadProps) => {
       >
         {text}
       </Text>
-    </div>
+    </Box>
   );
 };
 
 type KnobProps = {
-  text: string;
+  name: string;
+  value?: string;
   percentage?: number;
 };
-const Knob = ({ text, percentage }: KnobProps) => {
+const Knob = ({ name, value, percentage }: KnobProps) => {
   const theme = useTheme();
 
   return (
@@ -326,13 +377,13 @@ const Knob = ({ text, percentage }: KnobProps) => {
         aspectRatio: '1/1',
       }}
     >
-      <div
+      <Box
         style={{
           borderRadius: '50%',
           width: '100%',
           height: '100%',
-          ...useNeuBoxShadow(),
         }}
+        space="none"
       >
         <svg
           style={{ position: 'absolute', inset: '2%', filter: '' }}
@@ -346,8 +397,10 @@ const Knob = ({ text, percentage }: KnobProps) => {
             position: 'absolute',
             borderRadius: '50%',
             inset: '2%',
+            flexDirection: 'column',
+            justifyContent: 'center',
             ...useNeuBoxShadow({
-              distance: 2,
+              distance: 0.2,
               intensity: 0.2,
               inset: true,
             }),
@@ -358,7 +411,7 @@ const Knob = ({ text, percentage }: KnobProps) => {
               position: 'absolute',
               borderRadius: '50%',
               inset: '6%',
-              ...useNeuBoxShadow({ distance: 1, intensity: 0.2 }),
+              ...useNeuBoxShadow({ distance: 0.1, intensity: 0.2 }),
             }}
           ></div>
           {percentage !== undefined && (
@@ -384,17 +437,28 @@ const Knob = ({ text, percentage }: KnobProps) => {
           )}
           <Text
             style={{
-              margin: 'auto',
               textAlign: 'center',
               overflowWrap: 'anywhere',
-              padding: '1vw',
+              padding: '0 1vw',
             }}
-            scale={6}
+            scale={5}
           >
-            {text}
+            {transformControlName(name)}
           </Text>
+          {value && (
+            <Text
+              style={{
+                textAlign: 'center',
+                overflowWrap: 'anywhere',
+                padding: '0.5vw 1vw 0',
+              }}
+              size="sm"
+            >
+              {value}
+            </Text>
+          )}
         </div>
-      </div>
+      </Box>
     </div>
   );
 };
@@ -435,7 +499,7 @@ const BrowserResultElement = ({ result }: { result: BrowserResult }) => {
         padding: 5,
       }}
       neuShadow={{
-        distance: 2,
+        distance: 0.2,
         intensity: 0.2,
         inset: result.isSelected,
       }}
@@ -448,13 +512,19 @@ const BrowserResultElement = ({ result }: { result: BrowserResult }) => {
 };
 
 type BoxProps = React.JSX.IntrinsicElements['div'] & {
-  space?: 'sm' | 'md' | 'lg';
+  space?: 'none' | 'sm' | 'md' | 'lg';
   neuShadow?: Partial<NeuShadowProps>;
 };
 const Box = forwardRef<HTMLDivElement, BoxProps>(
   ({ style, neuShadow, space = 'md', ...props }: BoxProps, ref) => {
     const theme = useTheme();
-    const spaceDim = space === 'sm' ? '0.5vw' : space === 'md' ? '1vw' : '2vw';
+    const spaceDim = {
+      none: 0,
+      sm: '0.5vw',
+      md: '1vw',
+      lg: '2vw',
+    }[space];
+
     return (
       <div
         ref={ref}
@@ -462,8 +532,7 @@ const Box = forwardRef<HTMLDivElement, BoxProps>(
           ...useNeuBoxShadow(neuShadow),
           borderRadius: `${theme.roundness}vw`,
           padding: spaceDim,
-          rowGap: spaceDim,
-          columnGap: spaceDim,
+          gap: spaceDim,
           ...style,
         }}
         {...props}
@@ -481,21 +550,27 @@ const Text = ({
   style,
   size = 'lg',
   weight = 'bold',
-  scale = 0,
+  scale,
   ...props
 }: TextProps) => {
   const { fg } = useTheme();
   const fontScaleFactor =
-    scale && typeof props.children === 'string'
+    scale && typeof props.children === 'string' && props.children.length > scale
       ? Math.pow(scale / props.children.length, 0.3)
       : 1;
   const fontSize =
-    fontScaleFactor * (size === 'sm' ? 1 : size === 'md' ? 1.5 : 2.5);
+    fontScaleFactor * (size === 'sm' ? 1.5 : size === 'md' ? 2 : 2.5);
   const fontWeight =
     weight === 'light' ? 400 : weight === 'medium' ? 700 : 1000;
   return (
     <span
-      style={{ color: fg, fontSize: `${fontSize}vw`, fontWeight, ...style }}
+      style={{
+        color: fg,
+        fontSize: `${fontSize}vw`,
+        lineHeight: 1.1,
+        fontWeight,
+        ...style,
+      }}
       {...props}
     />
   );
@@ -524,11 +599,11 @@ const neuBoxShadow = (props: NeuShadowProps): React.CSSProperties => {
   const insetStr = inset ? 'inset' : '';
   return {
     boxShadow: `
-      ${insetStr} ${distance}px ${distance}px ${blur}px ${luminance(
+      ${insetStr} ${distance}vw ${distance}vw ${blur}vw ${luminance(
       color,
       -intensity
     )}, 
-      ${insetStr} ${-distance}px ${-distance}px ${blur}px ${luminance(
+      ${insetStr} ${-distance}vw ${-distance}vw ${blur}vw ${luminance(
       color,
       intensity
     )}
@@ -558,3 +633,36 @@ const luminance = (color: string, intensity: number) => {
 
   return `#${colors.join('')}`;
 };
+
+const useWindowDimensions = () => {
+  const getWindowDimensions = () => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+
+  const [windowDimensions, setWindowDimensions] = useState(
+    getWindowDimensions()
+  );
+
+  useEffect(() => {
+    const handleResize = () => setWindowDimensions(getWindowDimensions());
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  });
+
+  return windowDimensions;
+};
+
+const useIsFullscreen = () => {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement !== null);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+  return isFullscreen;
+};
+
+const isDev = () =>
+  !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
