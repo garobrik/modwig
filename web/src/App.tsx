@@ -10,8 +10,8 @@ import React, {
 import { Property } from 'csstype';
 
 const ThemeContext = createContext({
-  bg: '#f6f5f4' satisfies Property.Color,
-  fg: '#c64600' satisfies Property.Color,
+  bg: '#3d3846' satisfies Property.Color,
+  fg: '#9dcd41' satisfies Property.Color,
   blur: 0.6,
   distance: 0.3,
   intensity: 0.4,
@@ -149,11 +149,13 @@ export const App = () => {
             overflowY: 'clip',
           }}
         >
-          {/* <UIConfig updateTheme={updateTheme} /> */}
           {!useIsFullscreen() && (
-            <button onClick={() => rootRef.current?.requestFullscreen()}>
-              ⛶
-            </button>
+            <div>
+              <button onClick={() => rootRef.current?.requestFullscreen()}>
+                ⛶
+              </button>
+              <UIConfig updateTheme={updateTheme} />
+            </div>
           )}
           <div
             style={{
