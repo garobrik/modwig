@@ -51,6 +51,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   })
 
   def leftSix[T](l: List[T]) = l.slice(0, 3) ++ l.slice(4, 7)
+  def rightSix[T](l: List[T]) = l.slice(1, 4) ++ l.slice(5, 8)
 
   val knobs =
     List
@@ -170,7 +171,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
   object mainModes {
     val default: Mode = new Mode {
-      def name = "Session Control"
+      override def name = "Session Control"
 
       override def dependents = List(browser.isOpen)
 
@@ -180,7 +181,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
                         else selectedTrack.start.browseAction),
           ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
           ccPads(2) -> selectedTrack.deviceCursor.after.browseAction,
-          ccPads(3) -> (if !browser.isOpen() then selectedTrack.duplicate else selectedTrack.end.browseAction),
+          ccPads(3) -> (if !browser.isOpen() then selectedTrack.duplicateAndUnarm else selectedTrack.end.browseAction),
           ccPads(4) -> loops(0).triggerAction,
           ccPads(5) -> metronome.toggle,
           ccPads(6) -> (if !browser.isOpen() then transport.tapTempo else browser.commitAction),
@@ -208,9 +209,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
       override def dependents = deviceModes.map(_.device.exists)
 
-      override def submodes = List(deviceModes.find(_.device.exists()).getOrElse(genericMode))
-
-      override def bindings = List(
+      override def bindings = List(deviceModes.find(_.device.exists()).getOrElse(genericMode)) ++ List(
         ccPads(0) -> default.replaceAction,
         knobs(3) -> selectedTrack.volume,
         knobs(7) -> masterTrack.volume
@@ -236,7 +235,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       }
 
       abstract class DeviceMode[T <: SpecificDevice](val device: T) extends Mode {
-        def name = device.device.name()
+        override def name = device.device.name()
       }
       val deviceModes = List[DeviceMode[_]](
         new DeviceMode(Diva.Device(device)) {
@@ -316,7 +315,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
             )
           )
 
-          def bindings = RelativeBinding.list(
+          override def bindings = RelativeBinding.list(
             leftSix(knobs).zip(
               allKnobs(pageSwitch())(pageIdxs(pageSwitch())().min(allKnobs(pageSwitch()).length - 1))._2
             )
@@ -453,24 +452,18 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         new DeviceMode(DrumSynth.Device(device)) {
           import this.device._
 
-          val instIdx = Settable[Either[Int, Int]](Left(0))
-          val setInst =
-            (0 until 8).map(idx => createAction(() => model(idx).displayedValue(), () => instIdx.set(Left(idx))))
-          val setInstB =
-            (0 until 8).map(idx => createAction(() => model(idx).displayedValue(), () => instIdx.set(Right(idx))))
-
-          override def dependents = List(instIdx)
-
-          override def bindings =
-            RelativeBinding.list(
-              leftSix(knobs).zip(
-                instIdx() match {
-                  case Left(idx) =>
-                    List(instrument(idx), params(idx)(0), velocity(idx), model(idx), params(idx)(1), gain(idx))
-                  case Right(idx) => List.range(2, 8).map(params(idx)(_))
-                }
+          override val bindings = List(
+            Mode.Paged(notePads.zip(List.range(0, 8).map { idx =>
+              Mode.Page(
+                () => instrument(idx).displayedValue(),
+                RelativeBinding.list(
+                  leftSix(knobs)
+                    .zip(List(instrument(idx), params(idx)(0), velocity(idx), model(idx), params(idx)(1), gain(idx)))
+                ),
+                RelativeBinding.list(leftSix(knobs).zip(List.range(2, 8).map(params(idx)(_))))
               )
-            ) ++ List.range(0, 8).map(idx => ButtonBinding(notePads(idx), setInstB(idx), setInst(idx)))
+            }))
+          )
         }
       )
     }
@@ -598,8 +591,8 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     val loops = List.range(0, ccPads.length).map(LoopMode.apply)
 
     val loopSelect = new Mode {
-      def name = "Loop Select"
-      def bindings = ButtonBinding.list(ccPads.zip(loops.map(_.replaceAction)))
+      override def name = "Loop Select"
+      override def bindings = ButtonBinding.list(ccPads.zip(loops.map(_.replaceAction)))
     }
   }
   mainModes

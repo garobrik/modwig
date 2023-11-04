@@ -65,8 +65,10 @@ abstract class ControllerExtension(implicit val host: ControllerHost) {
     HardwareActionBindable(name, action, value)
   def createAction(name: String, action: () => Unit, value: Gettable[Double]) =
     HardwareActionBindable(() => name, action, value)
-  def createAction(name: () => String, action: () => Unit) = HardwareActionBindable(name, action)
-  def createAction(name: String, action: () => Unit): HardwareActionBindable = createAction(() => name, action)
+  def createAction(name: String | (() => String), action: () => Unit): HardwareActionBindable = HardwareActionBindable(
+    name match { case name: String => () => name; case name: (() => String) => name },
+    action
+  )
   def createAction(name: () => String, action: bitwig.HardwareActionBindable) =
     HardwareActionBindable(name, () => action.invoke())
   def createAction(name: String, action: bitwig.HardwareActionBindable): HardwareActionBindable =
@@ -122,9 +124,8 @@ case class ModeCtx()(implicit ext: ControllerExtension) {
 }
 
 abstract class Mode(implicit ext: ControllerExtension, val ctx: ModeCtx) {
-  def name: String
+  def name = "Unnamed"
   def bindings: Mode.Bindings
-  def submodes: List[ModeCtx | Mode] = List()
 
   def dependents = List[Observable[_]]()
 
@@ -147,10 +148,11 @@ abstract class Mode(implicit ext: ControllerExtension, val ctx: ModeCtx) {
 
   def refreshBindings(): Unit = {
     currentBindings.foreach(_.apply())
-    currentBindings = bindings.map(_.create()) ++ dependents.map(_.onChanged(_ => refreshBindings())) ++ submodes.map {
-      case ctx: ModeCtx => ctx.disable; case mode: Mode => mode.disable
-    }
-    submodes.foreach { case ctx: ModeCtx => ctx.enable(); case mode: Mode => mode.enable() }
+    currentBindings = bindings.map {
+      case ctx: ModeCtx           => ctx.enable(); () => ctx.disable()
+      case mode: Mode             => mode.enable(); () => mode.disable()
+      case binding: Binding[_, _] => binding.create()
+    } ++ dependents.map(_.onChanged(_ => refreshBindings()))
   }
 
   val setAction = ext.createAction(
@@ -174,6 +176,27 @@ abstract class Mode(implicit ext: ControllerExtension, val ctx: ModeCtx) {
   )
 }
 
+object Mode {
+  type Bindings = List[ModeCtx | Mode | Binding[_, _]]
+
+  case class Page(name: String | (() => String), onPressed: Bindings, onHeld: Bindings)
+  class Paged(selectors: List[(HardwareButton, Page)])(using ctx: ModeCtx, ext: ControllerExtension) extends Mode {
+    val page = Settable(0)
+    val pageHeld = selectors.map(_ => Settable(false))
+    val actions = selectors.zip(pageHeld).zipWithIndex.map { case (((_, Page(name, _, _)), pageHeld), idx) =>
+      (
+        ext.createAction(name, () => { page.set(idx); pageHeld.set(true) }),
+        ext.createAction(name, () => { page.set(idx); pageHeld.set(false) })
+      )
+    }
+
+    override def dependents = page +: pageHeld
+    override def bindings = selectors.unzip._1.zip(actions).map { case (button, (onPressed, onHeld)) =>
+      ButtonBinding(button, onPressed, onHeld)
+    } ++ (if pageHeld(page())() then selectors(page())._2.onHeld else selectors(page())._2.onPressed)
+  }
+}
+
 abstract class Binding[Bindable <: HardwareBindable[_], Control <: HardwareControl[_, Bindable, _]](
     val control: Control
 ) {
@@ -185,7 +208,8 @@ class ButtonBinding(
     onPressed: HardwareActionBindable,
     onReleased: Option[HardwareActionBindable]
 ) extends Binding(control) {
-  def this(control: HardwareButton, onPressed: HardwareActionBindable, onReleased:HardwareActionBindable) = this(control, onPressed, Some(onReleased))
+  def this(control: HardwareButton, onPressed: HardwareActionBindable, onReleased: HardwareActionBindable) =
+    this(control, onPressed, Some(onReleased))
   def this(control: HardwareButton, onPressed: HardwareActionBindable) = this(control, onPressed, Option.empty)
   def create() = {
     val pairs = (control.onReleased, onReleased) match {
@@ -271,15 +295,6 @@ object AbsoluteBinding {
 
 given Conversion[(AbsoluteHardwareKnob, AbsoluteHardwareControlBindable[_]), AbsoluteBinding] = (tup) =>
   AbsoluteBinding.apply.tupled(tup)
-
-object Mode {
-  type Bindings = List[Binding[_, _]]
-
-  def mergeBindings(a: Bindings, b: Bindings) = {
-    assert(!a.exists(binding => b.map(_.control).contains(binding.control)))
-    a ++ b
-  }
-}
 
 abstract class ObjectProxy(obj: bitwig.ObjectProxy) {
   val exists = BoolValue(obj.exists())
@@ -1016,6 +1031,15 @@ class Track[T <: bitwig.Track](val track: T)(implicit ext: ControllerExtension) 
   val groupExpanded = SettableBoolValue(track.isGroupExpanded)
   val position = IntValue(track.position)
   val duplicate = ext.createAction(() => s"Copy ${name()}", () => track.duplicate())
+  val duplicateAndUnarm = ext.createAction(
+    () => s"Copy ${name()}",
+    () => {
+      // TODO: different behavior for cursor/non-cursor
+      arm.set(false)
+      track.duplicate()
+      arm.set(true)
+    }
+  )
   val isSelected =
     if ext.selectedTrack == null then Observable(false) else BoolValue(track.createEqualsValue(ext.selectedTrack.track))
   lazy val devices = createBank(10)
