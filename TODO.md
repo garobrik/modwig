@@ -1,9 +1,8 @@
-- loop mixer
-- redo Diva controls
-- redo chroma controls
-- track/device metadata
-- detect tap vs long hold
 - redo generic device controls
+- detect tap vs long hold
+- loop mixer
+- track/device metadata
+- what to do abt xtra pages
 - set up string studio knobs
 - move velocity curve into code?
 - animation

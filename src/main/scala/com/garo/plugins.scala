@@ -19,10 +19,10 @@ class SpecificVST3Device[T](id: String, defaultParamID: Int) extends SpecificDev
   def matcher(implicit ext: ControllerExtension) = ext.host.createVST3DeviceMatcher(id)
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertVST3Device(id)
 
-  abstract class BaseDevice(val device: com.garo.Device) extends SpecificDevice {
+  abstract class BaseDevice(val device: com.garo.Device)(using ControllerExtension) extends SpecificDevice {
     val specificDevice = device.device.createSpecificVst3Device(id)
     def param(id: Int) = Parameter(specificDevice.createParameter(id))
-    def param(id: Int, name: String) = Parameter(specificDevice.createParameter(id), Some(() => name))
+    def param(id: Int, name: String) = Parameter(specificDevice.createParameter(id), Some(name))
     val exists = {
       val defaultParam = param(defaultParamID)
       defaultParam.exists
@@ -35,7 +35,7 @@ class SpecificBitwigDevice[T](idString: String, defaultParamID: String) extends 
   def matcher(implicit ext: ControllerExtension) = ext.host.createBitwigDeviceMatcher(id)
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertBitwigDevice(id)
 
-  abstract class BaseDevice(val device: com.garo.Device) extends SpecificDevice {
+  abstract class BaseDevice(val device: com.garo.Device)(using ControllerExtension) extends SpecificDevice {
     val specificDevice = device.device.createSpecificBitwigDevice(id)
     def param(id: String) = Parameter(specificDevice.createParameter(id))
     val exists = {
@@ -46,26 +46,26 @@ class SpecificBitwigDevice[T](idString: String, defaultParamID: String) extends 
 }
 
 object Enso extends SpecificVST3Device("565354456E736F656E736F0000000000", 50) {
-  class Device(device: com.garo.Device) extends super.BaseDevice(device) {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val lengthMult = param(50)
   }
 }
 
 object InstrumentSelector extends SpecificBitwigDevice("9588fbcf-721a-438b-8555-97e4231f7d2c", "INDEX") {
-  class Device(device: com.garo.Device) extends super.BaseDevice(device) {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val index = param("INDEX")
   }
 }
 
 object Chain extends SpecificBitwigDevice("c86d21fb-d544-4daf-a1bf-57de22aa320c", "MIX") {
-  class Device(device: com.garo.Device) extends super.BaseDevice(device) {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val gain = param("GAIN")
     val mix = param("MIX")
   }
 }
 
 object DrumSynth extends SpecificVST3Device("ABCDEF019182FAEB4149526D4D755379", 48) {
-  class Device(device: com.garo.Device) extends super.BaseDevice(device) {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val instrument = List(1572, 1724, 48634, 48786, 49589, 49741, 49872, 50675).map(param)
     val model = List(48, 1667, 1819, 48750, 48881, 49684, 49836, 50618).map(param)
     val velocity = List(50, 1669, 1821, 48752, 48904, 49686, 49838, 50641).map(param)
@@ -84,7 +84,7 @@ object DrumSynth extends SpecificVST3Device("ABCDEF019182FAEB4149526D4D755379", 
 }
 
 object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) {
-  class Device(device: com.garo.Device) extends super.BaseDevice(device) {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val oscModel = param(85)
     val hpfModel = param(139)
     val vcfModel = param(147)
@@ -125,12 +125,16 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
     val tuneModDepth = param(104, "Tune Depth")
     val shapeModSrc = param(109, "Shape Source")
     val shapeModDepth = param(110, "Shape Depth")
+    val fmModSrc = param(135, "FM Mod Source")
+    val fmModDepth = param(136, "FM Mod Depth")
     val filtModSrc = param(150, "Freq Source 1")
     val filtModDepth = param(151, "Freq Depth 1")
     val filtMod2Src = param(152, "Freq Source 2")
     val filtMod2Depth = param(153, "Freq Depth 1")
     val resModSrc = param(161, "Res Source")
     val resModDepth = param(162, "Res Depth")
+    val filtFMModSrc = param(163, "Filt FM Mod Src")
+    val filtFMModDepth = param(164, "Filt FM Mod Src")
 
     class Env(i: Int) {
       val attack = param(i)
@@ -161,7 +165,7 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
 }
 
 object Chromaphone extends SpecificVST3Device("56535443424D566368726F6D6170686F", 188) {
-  class Device(device: com.garo.Device) extends super.BaseDevice(device) {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     class Layer(l: Int) {
       val gain = param(5 + l * 5)
       val balance = param(200 + l * 470)

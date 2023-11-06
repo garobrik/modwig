@@ -20,6 +20,9 @@ trait Serializable {
 abstract class ControllerExtension(implicit val host: ControllerHost) {
   implicit val extension: ControllerExtension = this
 
+  var _isInitializaing = true
+  def isInitializaing = _isInitializaing
+
   val transport = Transport(host.createTransport())
   val arranger = host.createArranger()
   val application = Application(host.createApplication())
@@ -41,7 +44,7 @@ abstract class ControllerExtension(implicit val host: ControllerHost) {
   val blockSize = preferences.getNumberSetting("Max Block Size", "Audio", 1, 50, 1, "ms", 24)
   // val addr = preferences.getStringSetting("Local IP", "Network", 30, InetAddress.getLocalHost().getHostAddress())
 
-  val doNothingAction = createAction(() => "None", () => {})
+  val doNothingAction = createAction("None", () => {})
 
   def exit() = {}
   def flush() = {}
@@ -61,20 +64,13 @@ abstract class ControllerExtension(implicit val host: ControllerHost) {
   //   if (127 * (param.getRaw - scaledValue).abs / rangeSize <= 2) param.setRaw(scaledValue)
   // }
 
-  def createAction(name: () => String, action: () => Unit, value: Gettable[Double]) =
+  def createAction(name: Gettable[String], action: () => Unit, value: Gettable[Double]) =
     HardwareActionBindable(name, action, value)
-  def createAction(name: String, action: () => Unit, value: Gettable[Double]) =
-    HardwareActionBindable(() => name, action, value)
-  def createAction(name: String | (() => String), action: () => Unit): HardwareActionBindable = HardwareActionBindable(
-    name match { case name: String => () => name; case name: (() => String) => name },
-    action
-  )
-  def createAction(name: () => String, action: bitwig.HardwareActionBindable) =
-    HardwareActionBindable(name, () => action.invoke())
-  def createAction(name: String, action: bitwig.HardwareActionBindable): HardwareActionBindable =
-    createAction(() => name, action)
-  def createAction(action: bitwig.Action): HardwareActionBindable =
-    createAction(action.getName, action)
+  def createAction(name: Gettable[String], action: () => Unit) = HardwareActionBindable(name, action)
+  def createAction(name: Gettable[String], action: bitwig.HardwareActionBindable) =
+    HardwareActionBindable(name, action.invoke)
+  def createAction(action: bitwig.Action) =
+    HardwareActionBindable(Gettable(() => action.getName(), List()), action.invoke)
 
   object Matchers {
     val effect = host.createAudioEffectMatcher()
@@ -117,17 +113,16 @@ case class ModeCtx()(implicit ext: ControllerExtension) {
       oldStack.headOption.foreach(_.disable())
       stack.headOption.foreach(mode => {
         mode.enable()
-        ext.host.showPopupNotification(s"${mode.name} Mode")
+        ext.host.showPopupNotification(s"${mode.name()} Mode")
       })
     }
   }
 }
 
-abstract class Mode(implicit ext: ControllerExtension, val ctx: ModeCtx) {
-  def name = "Unnamed"
+abstract class Mode(val name: Gettable[String] = "Unnamed")(implicit ext: ControllerExtension, val ctx: ModeCtx) {
   def bindings: Mode.Bindings
 
-  def dependents = List[Observable[_]]()
+  def dependents = List[Gettable[_]]()
 
   def onEnable() = {}
   private var currentBindings: List[() => Unit] = List()
@@ -135,12 +130,12 @@ abstract class Mode(implicit ext: ControllerExtension, val ctx: ModeCtx) {
     if (!currentBindings.isEmpty) return
     onEnable()
     refreshBindings()
-    ext.host.println(s"enable mode $name")
+    ext.host.println(s"enable mode ${name()}")
   }
 
   def onDisable() = {}
   final def disable(): Unit = {
-    ext.host.println(s"disable mode $name")
+    ext.host.println(s"disable mode ${name()}")
     currentBindings.foreach(_.apply())
     currentBindings = List()
     onDisable()
@@ -155,45 +150,43 @@ abstract class Mode(implicit ext: ControllerExtension, val ctx: ModeCtx) {
     } ++ dependents.map(_.onChanged(_ => refreshBindings()))
   }
 
-  val setAction = ext.createAction(
-    () => s"$name",
-    () => ctx.set(this)
-  )
+  lazy val setAction = ext.createAction(name, () => ctx.set(this))
+  lazy val pushAction = ext.createAction(name, () => ctx.push(this))
+  lazy val popAction = ext.createAction(name, () => ctx.pop(this))
+  lazy val replaceAction = ext.createAction(name, () => ctx.replace(this))
 
-  val pushAction = ext.createAction(
-    () => s"$name",
-    () => ctx.push(this)
-  )
-
-  val popAction = ext.createAction(
-    () => s"$name",
-    () => ctx.pop(this)
-  )
-
-  val replaceAction = ext.createAction(
-    () => s"$name",
-    () => ctx.replace(this)
-  )
+  if (ext.isInitializaing) { setAction; pushAction; popAction; replaceAction }
 }
 
 object Mode {
   type Bindings = List[ModeCtx | Mode | Binding[_, _]]
 
-  case class Page(name: String | (() => String), onPressed: Bindings, onHeld: Bindings)
-  class Paged(selectors: List[(HardwareButton, Page)])(using ctx: ModeCtx, ext: ControllerExtension) extends Mode {
+  case class Page(name: String, onPressed: Bindings, onHeld: Bindings)
+  abstract class Paged(buttons: List[HardwareButton])(using ctx: ModeCtx, ext: ControllerExtension) extends Mode {
+    def pages: List[Page]
+
     val page = Settable(0)
-    val pageHeld = selectors.map(_ => Settable(false))
-    val actions = selectors.zip(pageHeld).zipWithIndex.map { case (((_, Page(name, _, _)), pageHeld), idx) =>
-      (
-        ext.createAction(name, () => { page.set(idx); pageHeld.set(true) }),
-        ext.createAction(name, () => { page.set(idx); pageHeld.set(false) })
+    val pageHeld = buttons.map(_ => Settable(false))
+    val pageSwapBindings = buttons.zip(pageHeld).zipWithIndex.map { case ((button, pageHeld), idx) =>
+      ButtonBinding(
+        button,
+        ext.createAction(
+          Gettable(() => pages.map(_.name).applyOrElse(idx, _ => ""), dependents),
+          () => { page.set(idx); pageHeld.set(true) }
+        ),
+        ext.createAction(
+          Gettable(() => pages.map(_.name).applyOrElse(idx, _ => ""), dependents),
+          () => { page.set(idx); pageHeld.set(false) }
+        )
       )
     }
 
     override def dependents = page +: pageHeld
-    override def bindings = selectors.unzip._1.zip(actions).map { case (button, (onPressed, onHeld)) =>
-      ButtonBinding(button, onPressed, onHeld)
-    } ++ (if pageHeld(page())() then selectors(page())._2.onHeld else selectors(page())._2.onPressed)
+    override def bindings = {
+      val curPage = pages.zipWithIndex.filter(_._2 == page()).map(_._1)
+      val curBindings = curPage.flatMap(curPage => if pageHeld(page())() then curPage.onHeld else curPage.onPressed)
+      curBindings ++ pageSwapBindings
+    }
   }
 }
 
@@ -302,10 +295,10 @@ abstract class ObjectProxy(obj: bitwig.ObjectProxy) {
 
 case class Browser(browser: bitwig.PopupBrowser)(implicit ext: ControllerExtension)
     extends RelativeHardwareControlBindable[bitwig.PopupBrowser] {
-  val bindableName = Gettable("Browse")
+  val bindableName = "Browse"
   def bindable = browser
-  val rawValue = Gettable(0.0)
-  val displayedValue = Gettable("")
+  val rawValue = 0.0
+  val displayedValue = ""
 
   val commitAction = ext.createAction("Commit", browser.commitAction())
   val cancelAction = ext.createAction("Cancel", browser.cancelAction())
@@ -527,32 +520,33 @@ case class RelativeHardwareKnob(
   }
 }
 
-abstract trait HardwareBindable[T <: bitwig.HardwareBindable] extends Serializable {
+abstract trait HardwareBindable[T <: bitwig.HardwareBindable](implicit ext: ControllerExtension) extends Serializable {
   val bindableName: Gettable[String]
   val rawValue: Gettable[Double]
   val displayedValue: Gettable[String]
   def bindable: T
 
-  def toJson() = ujson.Obj(
-    "name" -> bindableName(),
-    "value" -> rawValue(),
-    "displayedValue" -> displayedValue()
-  )
+  def toJson() =
+    ujson.Obj(
+      "name" -> bindableName(),
+      "value" -> rawValue(),
+      "displayedValue" -> displayedValue()
+    )
+
 }
 
 abstract trait RelativeHardwareControlBindable[T <: bitwig.RelativeHardwarControlBindable] extends HardwareBindable[T]
 abstract trait AbsoluteHardwareControlBindable[T <: bitwig.AbsoluteHardwarControlBindable] extends HardwareBindable[T]
 
 class HardwareActionBindable(
-    nameFn: () => String,
+    override val bindableName: Gettable[String],
     action: () => Unit,
     override val rawValue: Gettable[Double] = Gettable(0.0)
 )(implicit
     ext: ControllerExtension
-) extends HardwareBindable {
-  override val bindableName = Gettable(nameFn)
-
-  override val displayedValue = Gettable("")
+) extends HardwareBindable()(ext) {
+  if (bindableName == null) throw new Exception()
+  override val displayedValue = ""
   override val bindable = ext.host.createAction(
     new Runnable {
       override def run() = action()
@@ -733,31 +727,7 @@ case class HeaderSetting(text: String)(implicit settingCtx: SettingCtx) extends 
 abstract class Gettable[T] {
   def get(): T
   def apply() = get()
-}
-
-object Gettable {
-  def apply[T](f: () => T) =
-    new Gettable[T] {
-      def get() = f()
-    }
-
-  def apply[T](t: T) =
-    new Gettable[T] {
-      def get() = t
-    }
-}
-
-abstract class Observable[T] extends Gettable[T] {
-  protected def addValueObserver(callback: T => Unit): Unit
-  addValueObserver(t => {
-    callbacks.foreach(_(t))
-  })
-  var callbacks = Set.empty[T => Unit]
-
-  def onChanged(callback: T => Unit) = {
-    callbacks = callbacks + callback
-    () => callbacks = callbacks - callback
-  }
+  def onChanged(callback: T => Unit): () => Unit
 
   def doAfterChanged(callback: T => Unit) = {
     var cancel: () => Unit = null
@@ -766,6 +736,40 @@ abstract class Observable[T] extends Gettable[T] {
       cancel()
     })
     cancel
+  }
+
+  def map[T2](f: T => T2) = Gettable(() => f(get()), List(this))
+}
+
+object Gettable {
+  def apply[T](f: () => T, dependents: List[Gettable[_]]) =
+    new Observable[T] {
+      override def get() = f()
+      override def addValueObserver(callback: T => Unit) = {
+        dependents.foreach(_.onChanged(_ => callback(f())))
+      }
+    }
+
+  def apply[T](t: T) =
+    new Gettable[T] {
+      override def get() = t
+      override def onChanged(callback: T => Unit) = () => {}
+    }
+}
+
+given Conversion[String, Gettable[String]] = t => Gettable(t)
+given Conversion[Double, Gettable[Double]] = t => Gettable(t)
+
+abstract class Observable[T] extends Gettable[T] {
+  protected def addValueObserver(callback: T => Unit): Unit
+  addValueObserver(t => {
+    callbacks.foreach(_(t))
+  })
+  var callbacks = Set.empty[T => Unit]
+
+  override def onChanged(callback: T => Unit) = {
+    callbacks = callbacks + callback
+    () => callbacks = callbacks - callback
   }
 }
 
@@ -783,7 +787,11 @@ class Settable[T](t: T)(implicit ext: ControllerExtension) extends Observable[T]
 class SettableBool(t: Boolean, trueName: String, falseName: String)(implicit ext: ControllerExtension)
     extends Settable(t) {
   val toggle =
-    ext.createAction(() => if get() then trueName else falseName, () => set(!get()), () => if get() then 1.0 else 0.5)
+    ext.createAction(
+      this.map(if _ then trueName else falseName),
+      () => set(!get()),
+      this.map(if _ then 1.0 else 0.5)
+    )
 }
 
 abstract class Value[T](value: bitwig.Value[_ <: ValueChangedCallback]) extends Observable[T] {
@@ -864,7 +872,6 @@ class BeatTimeValue(value: bitwig.BeatTimeValue)(implicit ext: ControllerExtensi
   override def get() = BeatTime(value.get())
 
   override def onChanged(callback: BeatTime => Unit) = {
-    ext.host.println(s"transport listening to: ${(callbacks.size + 1).toString}")
     super.onChanged(callback)
   }
 }
@@ -874,15 +881,15 @@ case class SettableBeatTimeValue(value: bitwig.SettableBeatTimeValue, name: Stri
     with SettableValue[BeatTime]
     with RelativeHardwareControlBindable {
 
-  override val bindableName = Gettable(name)
-  override val displayedValue = Gettable(() => s"${get().bars.floor.toInt}.${get().beatInBar.round.toInt}")
-  override val rawValue = Gettable(0)
+  override val bindableName = name
+  override val displayedValue = this.map(v => s"${v.bars.floor.toInt}.${v.beatInBar.round.toInt}")
+  override val rawValue = 0.0
 
   override def set(beatTime: BeatTime) = value.set(beatTime.beats)
   def bindable = value.beatStepper()
 }
 
-class Parameter(param: bitwig.Parameter, name: Option[() => String] = None)
+class Parameter(param: bitwig.Parameter, name: Option[Gettable[String]] = None)(using ControllerExtension)
     extends Value[Double](param),
       RelativeHardwareControlBindable[bitwig.Parameter],
       AbsoluteHardwareControlBindable[bitwig.Parameter] {
@@ -896,15 +903,14 @@ class Parameter(param: bitwig.Parameter, name: Option[() => String] = None)
     )
   override def get() = param.get
 
-  override val bindableName = name.map(Gettable.apply).getOrElse(StringValue(param.name()))
+  override val bindableName = name.getOrElse(StringValue(param.name()))
   override val rawValue = this
   override val displayedValue = StringValue(param.displayedValue())
   override def bindable = param
 
   val exists = BoolValue(param.exists())
 
-  def copy(name: () => String = bindableName.apply) = Parameter(param, Some(name))
-  def copy(name: String) = Parameter(param, Some(() => name))
+  def copy(name: Gettable[String]) = Parameter(param, Some(name))
 }
 
 class IntValue(value: bitwig.IntegerValue) extends Value[Int](value) {
@@ -987,14 +993,14 @@ class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: Controlle
 }
 
 class Channel(val channel: bitwig.Channel)(implicit ext: ControllerExtension) extends DeviceChain(channel) {
-  val volume = Parameter(channel.volume, Option(() => name() + " Volume"))
+  val volume = Parameter(channel.volume, Some(name.map(_ + " Volume")))
   val pan = Parameter(channel.pan)
   val mute = SettableBoolValue(channel.mute)
   val solo = SettableBoolValue(channel.solo)
   val active = SettableBoolValue(channel.isActivated)
 
   def select() = channel.selectInMixer()
-  val selectAction = ext.createAction(() => name.get(), () => select())
+  val selectAction = ext.createAction(name, () => select())
 
   val vuMeterRMS = ValueFromLastObserved[Int](
     0,
@@ -1030,9 +1036,9 @@ class Track[T <: bitwig.Track](val track: T)(implicit ext: ControllerExtension) 
   val isGroup = BoolValue(track.isGroup)
   val groupExpanded = SettableBoolValue(track.isGroupExpanded)
   val position = IntValue(track.position)
-  val duplicate = ext.createAction(() => s"Copy ${name()}", () => track.duplicate())
+  val duplicate = ext.createAction(name.map("Copy " + _), () => track.duplicate())
   val duplicateAndUnarm = ext.createAction(
-    () => s"Copy ${name()}",
+    name.map("Copy " + _),
     () => {
       // TODO: different behavior for cursor/non-cursor
       arm.set(false)
@@ -1095,8 +1101,9 @@ class TrackCursor(id: String, cursorName: String, follow: Boolean)(implicit ext:
     extends Track(ext.host.createCursorTrack(id, cursorName, ext.numSends, ext.numScenes, follow)),
       RelativeHardwareControlBindable[bitwig.Cursor] {
   override def bindable = track
-  override val bindableName = Gettable(cursorName)
-  override val rawValue = Gettable(() => position().toDouble / ext.allTracks.currentSize())
+  override val bindableName = cursorName
+  override val rawValue =
+    Gettable(() => position().toDouble / ext.allTracks.currentSize(), List(position)) //
   override val displayedValue = name
 
   val hasNext = new BoolValue(track.hasNext)
@@ -1209,7 +1216,7 @@ class DeviceCursor(cursorName: String, override val device: bitwig.CursorDevice)
     extends Device(device),
       RelativeHardwareControlBindable[bitwig.Cursor] {
   override def bindable = device
-  override val bindableName = Gettable(cursorName)
+  override val bindableName = cursorName
   override val rawValue = Gettable(0.0)
   override val displayedValue = name
   def selectDevice(other: Device) = device.selectDevice(other.device)
@@ -1249,7 +1256,7 @@ class RemoteControls(remoteControls: CursorRemoteControlsPage, device: bitwig.De
   val selectPageAction =
     (0 until 8).map(idx =>
       ext.createAction(
-        () => if idx < pageNames().length then pageNames()(idx) else s"Select Page ${idx + 1}",
+        pageNames.map(pageNames => if idx < pageNames.length then pageNames(idx) else s"Select Page ${idx + 1}"),
         () => selectedPage.set(idx)
       )
     )
@@ -1334,7 +1341,7 @@ case class Transport(transport: bitwig.Transport)(implicit ext: ControllerExtens
   val postRecordAction = Transport.PostRecordAction.SettableEnumValue(transport.clipLauncherPostRecordingAction())
   val postRecordTime = SettableBeatTimeValue(transport.getClipLauncherPostRecordingTimeOffset(), "Loop Length")
 
-  val playAction = ext.createAction(() => if isPlaying() then "Pause" else "Play", transport.playAction())
+  val playAction = ext.createAction(isPlaying.map(if _ then "Pause" else "Play"), transport.playAction())
   val stopAction = ext.createAction("Stop", transport.stopAction())
   val recordAction = ext.createAction("Record", transport.recordAction())
   val tapTempo = ext.createAction("Tap Tempo", transport.tapTempoAction())
@@ -1426,7 +1433,8 @@ case class ControllerExtensionProxy(
 ) extends bitwigController.ControllerExtension(defn, host) {
   lazy val ext = extCtor(host)
   override def init() = {
-    ext
+    // TODO: iz ugly
+    ext._isInitializaing = false
   }
 
   override def exit() = {

@@ -51,7 +51,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   })
 
   def leftSix[T](l: List[T]) = l.slice(0, 3) ++ l.slice(4, 7)
-  def rightSix[T](l: List[T]) = l.slice(1, 4) ++ l.slice(5, 8)
+  def rightSix[T](l: List[T]) = l.slice(5, 8) ++ l.slice(1, 4)
 
   val knobs =
     List
@@ -124,22 +124,21 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     val control = HardwareButton("Pedal", ActionMatcher(ActionMatcher.CC, 64, channel = Some(0)))
     implicit val modeCtx: ModeCtx = ModeCtx()
     val modes = List(
-      new Mode {
-        override def name = "Loop"
+      new Mode("Loop") {
         override def bindings = List(control -> mainModes.loops(0).triggerAction)
       },
-      new Mode {
+      new Mode("Kick") {
         val kickAction = createAction(
           "Kick",
           () => padInput.sendRawMidiEvent(ShortMidiMessage.NOTE_ON + 1, 0, 127)
         )
-        override def name = "Kick"
         override def bindings = List(control -> kickAction)
       }
     )
 
+    modes.foreach(_.setAction)
     val toggleModeAction = createAction(
-      () => "Toggle Pedal Function",
+      "Toggle Pedal Function",
       () => {
         val currentModeIdx = modes.indexOf(modeCtx.current.getOrElse(modes.head))
         val nextModeIdx = (currentModeIdx + 1) % modes.length
@@ -170,11 +169,16 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   }
 
   object mainModes {
-    val default: Mode = new Mode {
-      override def name = "Session Control"
-
+    val default: Mode = new Mode("Session Control") {
       override def dependents = List(browser.isOpen)
 
+      val commitAndSwitch = createAction(
+        "Commit",
+        () => {
+          browser.commitAction()
+          selectedTrackMode.replaceAction()
+        }
+      )
       override def bindings =
         List(
           ccPads(0) -> (if !browser.isOpen() then selectedTrackMode.replaceAction
@@ -184,7 +188,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           ccPads(3) -> (if !browser.isOpen() then selectedTrack.duplicateAndUnarm else selectedTrack.end.browseAction),
           ccPads(4) -> loops(0).triggerAction,
           ccPads(5) -> metronome.toggle,
-          ccPads(6) -> (if !browser.isOpen() then transport.tapTempo else browser.commitAction),
+          ccPads(6) -> (if !browser.isOpen() then transport.tapTempo else commitAndSwitch),
           ccPads(7) -> (if !browser.isOpen() then transport.playAction else browser.cancelAction),
           knobs(0) -> selectedTrack,
           knobs(1) -> selectedTrack.deviceCursor,
@@ -198,11 +202,10 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
     }
 
-    val selectedTrackMode = new Mode {
+    val selectedTrackMode = new Mode("Device Control") {
       val device = selectedTrack.deviceCursor
       val joystickPage = device.createTaggedRemoteControlsPage("XY", "xy")
 
-      override def name = "Device Control"
       override def onEnable() = {
         device.remoteControls.visible.set(true)
       }
@@ -215,8 +218,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         knobs(7) -> masterTrack.volume
       )
 
-      val genericMode = new Mode {
-        override def name = "Generic Device"
+      val genericMode = new Mode("Generic Device") {
         override def dependents = device.remoteControls.pageCount +: device.remoteControls.controls.map(_.exists)
         override def bindings =
           AbsoluteBinding.list(joystick.mods.zip(joystickPage.controls)) ++ leftSix(knobs)
@@ -225,244 +227,150 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
               if control.exists() then RelativeBinding(knob, control)
               else ButtonBinding(knob.asButton, control.startMapping)
             } ++ ButtonBinding.list(
-            (ccPads.slice(4, 8) ++ ccPads.slice(2, 4))
-              .zip(
-                device.remoteControls.selectPageAction.take(device.remoteControls.pageCount()) ++ (0 until 8).map(_ =>
-                  device.remoteControls.createPage
-                )
+            rightSix(ccPads).zip(
+              device.remoteControls.selectPageAction.take(device.remoteControls.pageCount()) ++ (0 until 8).map(_ =>
+                device.remoteControls.createPage
               )
+            )
           )
       }
 
-      abstract class DeviceMode[T <: SpecificDevice](val device: T) extends Mode {
-        override def name = device.device.name()
-      }
+      abstract class DeviceMode[T <: SpecificDevice](val device: T) extends Mode(device.device.name)
+
       val deviceModes = List[DeviceMode[_]](
         new DeviceMode(Diva.Device(device)) {
           import this.device._
-          override def dependents =
-            List(pageSwitch, pageIdxs(0), pageIdxs(1), oscModel, hpfModel, vcfModel, env1Model, env2Model)
-          val pageSwitch = Settable(0)
-          val pageIdxs = List(Settable(0), Settable(0))
 
-          def oscKnobs = oscModel.displayedValue() match {
-            case "Triple VCO" =>
-              List(
-                "VCO1" -> List(vco1.shape, vco1.volume, vco1.tune, vco1.fm, filterFM),
-                "VCO2" -> List(vco2.shape, vco2.volume, vco2.tune, vco2.sync),
-                "VCO3" -> List(vco3.shape, vco3.volume, vco3.tune, vco3.sync),
-                "Filter" -> List(feedback, noise, pinkWhite, filterFreq, filterResonance, filterKeyFollow)
-              )
-            case _ => host.println(oscModel.displayedValue()); List()
-          }
-
-          def envKnobs = List
-            .range(0, 2)
-            .map(idx =>
-              s"Env ${idx + 1}" -> List(
-                env(idx).attack,
-                env(idx).decay,
-                env(idx).sustain,
-                env(idx).release,
-                env(idx).velocity,
-                env(idx).keyFollow
-              )
-            )
-
-          def modKnobs = List(
-            "Tune Mod" -> (vcos.map(_.tuneMod) ++ List(
-              tuneModDepth,
-              tuneModSrc
-            )),
-            "Shape Mod" -> (vcos.map(_.shapeMod) ++ List(
-              shapeModDepth,
-              shapeModSrc
-            )),
-            "Filt Mod" -> List(
-              filtModSrc,
-              filtMod2Src,
-              resModSrc,
-              filtModDepth,
-              filtMod2Depth,
-              resModDepth
+          def allKnobs = List(
+            "VCO1/ FM" -> List(
+              List(vco1.shape, vco1.volume, vco1.tune, vco1.tuneMod, vco1.shapeMod),
+              List(vco1.fm, fmModSrc, fmModDepth, filterFM, filtFMModSrc, filtFMModDepth)
+            ),
+            "VCO2/3" -> List(
+              List(vco2.shape, vco2.volume, vco2.tune, vco2.sync),
+              List(vco3.shape, vco3.volume, vco3.tune, vco3.sync)
+            ),
+            "Filter" -> List(
+              List(feedback, noise, pinkWhite, filterFreq, filterResonance, filterKeyFollow),
+              List(filtModSrc, filtMod2Src, resModSrc, filtModDepth, filtMod2Depth, resModDepth)
+            ),
+            "Env" -> env.map(env => List(env.attack, env.decay, env.sustain, env.release, env.velocity, env.keyFollow)),
+            "LFO" -> lfo.map(lfo => List(lfo.waveform, lfo.delay, lfo.restart, lfo.sync, lfo.rate, lfo.phase)),
+            "KBD / VCO Mod" -> List(
+              List(tuneModSrc, shapeModSrc, shapeModSrc, tuneModDepth, shapeModDepth, shapeModDepth),
+              List(polyMode, voiceStack, drive, glide, vibrato)
             )
           )
 
-          def keyboardKnobs = "Keyboard" -> List(polyMode, voiceStack, drive, glide, vibrato, filterKeyFollow)
+          override val bindings =
+            List(
+              new Mode.Paged(rightSix(ccPads)) {
+                override def dependents = super.dependents ++ List(oscModel, hpfModel, vcfModel, env1Model, env2Model)
 
-          def lfoKnobs = List
-            .range(0, 2)
-            .map(idx =>
-              s"LFO ${idx + 1}" -> List(
-                lfo(idx).waveform,
-                lfo(idx).delay,
-                lfo(idx).restart,
-                lfo(idx).sync,
-                lfo(idx).rate,
-                lfo(idx).phase
-              )
+                def pages = allKnobs.map { case (name, pageKnobs) =>
+                  Mode.Page(
+                    name,
+                    RelativeBinding.list(leftSix(knobs).zip(pageKnobs(0))),
+                    RelativeBinding.list(leftSix(knobs).zip(pageKnobs(1)))
+                  )
+                }
+              },
+              joystick.upMod.CCBinding(1),
+              joystick.leftMod.CCBinding(2),
+              joystick.rightMod.CCBinding(11)
+              // joystick.leftMod.PitchBinding(-1),
+              // joystick.rightMod.PitchBinding(1),
             )
-
-          def allKnobs = List(oscKnobs :+ envKnobs(0) :+ keyboardKnobs, modKnobs ++ List(envKnobs(1)) ++ lfoKnobs)
-          val togglePageAction = createAction("Switch Page", () => pageSwitch.set(1 - pageSwitch()))
-          val selectPageActions = (0 until 2).map(switchIdx =>
-            (0 until 6).map(idx =>
-              createAction(
-                () => allKnobs(switchIdx)(idx)._1,
-                () => pageIdxs(switchIdx).set(idx),
-                Gettable(() => if pageIdxs(switchIdx)().min(allKnobs(switchIdx).length - 1) == idx then 1.0 else 0.0)
-              )
-            )
-          )
-
-          override def bindings = RelativeBinding.list(
-            leftSix(knobs).zip(
-              allKnobs(pageSwitch())(pageIdxs(pageSwitch())().min(allKnobs(pageSwitch()).length - 1))._2
-            )
-          ) ++ ButtonBinding.list(
-            (ccPads(4) -> togglePageAction) +: (ccPads.slice(5, 8) ++ ccPads.slice(1, 4))
-              .zip(selectPageActions(pageSwitch()).take(allKnobs(pageSwitch()).length))
-          ) ++ List(
-            joystick.upMod.CCBinding(1),
-            joystick.leftMod.CCBinding(2),
-            joystick.rightMod.CCBinding(11)
-            // joystick.leftMod.PitchBinding(-1),
-            // joystick.rightMod.PitchBinding(1),
-          )
         },
         new DeviceMode(Chromaphone.Device(device)) {
           val layer = this.device.layer(0)
           import layer._
-          override def dependents = resonator
-            .map(_.objectType) ++ resonatorHit ++ List(
-            noiseFiltType,
-            noiseEnvType,
-            lfoType,
-            malletMod,
-            noiseMod,
-            pageIdx
-          )
 
-          val pageIdx = Settable(0)
-          val malletMod = SettableBool(false, "Mallet", "Mod")
-          val noiseMod = SettableBool(false, "Noise", "Mod")
-          val resonatorHit = resonator.map(_ => SettableBool(false, "Object", "Hit Pos"))
-
-          def knobPages: List[(String, (Option[HardwareActionBindable], List[Parameter]))] = resonator
-            .zip(resonatorHit)
-            .map { (res, hit) =>
-              s"Object ${res.name}" -> (
-                Some(hit.toggle),
-                if !hit() then
-                  List(
-                    res.objectType,
-                    if res.isTube then res.radius else res.density,
-                    res.release,
-                    res.decay,
-                    res.decayKeyTrack,
-                    res.decayVeloTrack
-                  )
-                else
-                  List(
-                    res.hitPos,
-                    res.tone,
-                    res.material,
-                    res.lowCut,
-                    res.hitPosVeloTrack,
-                    res.hitPosRand
-                  )
+          def allKnobs = resonator.map(res =>
+            s"Object ${res.name}" -> List(
+              List(
+                res.objectType,
+                res.release,
+                res.decay,
+                if res.isTube then res.radius else res.density,
+                res.tone,
+                res.material
+              ),
+              List(res.lowCut, res.decayKeyTrack, res.decayVeloTrack, res.hitPos, res.hitPosVeloTrack, res.hitPosRand)
+            ),
+          ) ++ List(
+            "Mallet" -> List(
+              List(malletStiffness, malletNoise, malletVol, malletColor, malletVolDirect),
+              List(
+                malletStiffnessKeyTrack,
+                malletNoiseKeyTrack,
+                malletVolKeyTrack,
+                malletStiffnessVeloTrack,
+                malletNoiseVeloTrack,
+                malletVolVeloTrack
               )
-            } ++ List(
-            "Mallet" -> (
-              Some(malletMod.toggle),
-              if !malletMod() then
-                List(
-                  malletStiffness,
-                  malletNoise,
-                  malletVol,
-                  malletColor,
-                  malletVolDirect
-                )
-              else
-                List(
-                  malletStiffnessKeyTrack,
-                  malletNoiseKeyTrack,
-                  malletVolKeyTrack,
-                  malletStiffnessVeloTrack,
-                  malletNoiseVeloTrack,
-                  malletVolVeloTrack
-                )
             ),
-            "Noise" -> (
-              Some(noiseMod.toggle),
-              if !noiseMod() then
-                List(
-                  noiseFiltFreq,
-                  noiseDensity,
-                  noiseVol,
-                  noiseFiltType,
-                  if noiseFiltType.displayedValue() == "HP+LP" then noiseFiltWidth else noiseFiltQ,
-                  noiseVolDirect
-                )
-              else
-                List(
-                  noiseFiltFreqKey,
-                  noiseDensityKey,
-                  noiseVolKeyTrack,
-                  noiseFiltFreqVelo,
-                  noiseDensityVelo,
-                  noiseVolVeloTrack
-                )
+            "Noise" -> List(
+              List(
+                noiseFiltFreq,
+                noiseDensity,
+                noiseVol,
+                noiseFiltType,
+                if noiseFiltType.displayedValue() == "HP+LP" then noiseFiltWidth else noiseFiltQ,
+                noiseVolDirect
+              ),
+              List(
+                noiseFiltFreqKey,
+                noiseDensityKey,
+                noiseVolKeyTrack,
+                noiseFiltFreqVelo,
+                noiseDensityVelo,
+                noiseVolVeloTrack
+              )
             ),
-            "LFO" -> (Option.empty, List(
-              lfoType,
-              lfoSyncRate,
-              lfoDelay,
-              noiseVolLFO,
-              noiseDensityLFO,
-              noiseFiltFreqLFO
-            )),
-            "Env" -> (Option.empty, List(
-              noiseEnvA,
-              noiseEnvD,
-              noiseEnvS,
-              noiseEnvR,
-              noiseFiltFreqEnv,
-              noiseDensityEnv
-            )),
-            "Balance" -> (Option.empty, List(balance, unisonOn, coupled, balanceKeyFollow, vibratoAmount, gain))
+            "LFO / Env" -> List(
+              List(lfoType, lfoSyncRate, lfoDelay, noiseVolLFO, noiseDensityLFO, noiseFiltFreqLFO),
+              List(noiseEnvA, noiseEnvD, noiseEnvS, noiseEnvR, noiseFiltFreqEnv, noiseDensityEnv)
+            ),
+            "Balance" -> List(List(balance, unisonOn, coupled, balanceKeyFollow, vibratoAmount, gain), List())
           )
 
-          def pads = ccPads.slice(4, 8) ++ ccPads.slice(1, 4)
-          val selectPageAction = pads.zipWithIndex.map { (_, idx) =>
-            createAction(
-              () => knobPages(idx)._1,
-              () => pageIdx.set(idx),
-              Gettable(() => if pageIdx() == idx then 1.0 else 0.0)
-            )
-          }
+          override val bindings = List(
+            new Mode.Paged(rightSix(ccPads)) {
+              override def dependents = super.dependents ++ resonator
+                .map(_.objectType) ++ List(
+                noiseFiltType,
+                noiseEnvType,
+                lfoType
+              )
 
-          override def bindings = RelativeBinding.list(knobPages(pageIdx()) match {
-            case (name, (_, params)) => leftSix(knobs).zip(params)
-          }) ++ ButtonBinding.list(pads.zip(knobPages.zipWithIndex.map {
-            case ((_, (Some(action), _)), idx) if idx == pageIdx() => action
-            case (_, idx)                                          => selectPageAction(idx)
-          }))
+              def pages = allKnobs.map { case (name, pageKnobs) =>
+                Mode.Page(
+                  name,
+                  RelativeBinding.list(leftSix(knobs).zip(pageKnobs(0))),
+                  RelativeBinding.list(leftSix(knobs).zip(pageKnobs(1)))
+                )
+              }
+            }
+          )
         },
         new DeviceMode(DrumSynth.Device(device)) {
           import this.device._
 
           override val bindings = List(
-            Mode.Paged(notePads.zip(List.range(0, 8).map { idx =>
-              Mode.Page(
-                () => instrument(idx).displayedValue(),
-                RelativeBinding.list(
-                  leftSix(knobs)
-                    .zip(List(instrument(idx), params(idx)(0), velocity(idx), model(idx), params(idx)(1), gain(idx)))
-                ),
-                RelativeBinding.list(leftSix(knobs).zip(List.range(2, 8).map(params(idx)(_))))
-              )
-            }))
+            new Mode.Paged(notePads.take(8)) {
+              override def dependents = instrument.map(_.displayedValue)
+              override def pages = List.range(0, 8).map { idx =>
+                Mode.Page(
+                  instrument(idx).displayedValue(),
+                  RelativeBinding.list(
+                    leftSix(knobs)
+                      .zip(List(instrument(idx), params(idx)(0), velocity(idx), model(idx), params(idx)(1), gain(idx)))
+                  ),
+                  RelativeBinding.list(leftSix(knobs).zip(List.range(2, 8).map(params(idx)(_))))
+                )
+              }
+            }
           )
         }
       )
@@ -473,10 +381,9 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     val loopCursor = TrackCursor("LOOP_CURSOR", "Loop Cursor", true)
     loopCursor.clipCursor
     val loopTracks = loopsTrack.children(ccPads.length)
-    case class LoopMode(idx: Int) extends Mode {
+    case class LoopMode(idx: Int) extends Mode(loopTracks(idx).name) {
       val track = loopTracks(idx)
       val fxTrack = fxTrackBank(idx)
-      override def name = track.name()
 
       val loops = track.children(128)
 
@@ -487,12 +394,10 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         track.select()
       }
 
-      val setLengthMode = new Mode {
-        override def name = "Set Length"
-
+      val setLengthMode = new Mode("Set Length") {
         val actions = List(1, 2, 3, 4, 6, 8, 12, 16).map(length =>
           createAction(
-            () => s"Set Length To $length",
+            s"Set Length To $length",
             () => { transport.postRecordTime.set(BeatTime.bars(length)); popAction() }
           )
         )
@@ -590,9 +495,8 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     }
     val loops = List.range(0, ccPads.length).map(LoopMode.apply)
 
-    val loopSelect = new Mode {
-      override def name = "Loop Select"
-      override def bindings = ButtonBinding.list(ccPads.zip(loops.map(_.replaceAction)))
+    val loopSelect = new Mode("Loop Select") {
+      override val bindings = ButtonBinding.list(ccPads.zip(loops.map(_.replaceAction)))
     }
   }
   mainModes
@@ -608,22 +512,26 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   )
 
   def uiState() = {
-    try
-      ujson
-        .Obj(
-          "pads" -> ujson.Arr(ccPads.take(8).map(_.toJson()): _*),
-          "knobs" -> ujson.Arr(knobs.take(8).map(_.toJson()): _*),
-          "mode" -> modeCtx.current.map(_.name).getOrElse(""),
-          "browserResults" -> (if !browser.isOpen() then ujson.Null
-                               else browser.resultsColumn.toJson()),
-          "tracks" -> allTracks.toJson()
-        )
-        .toString
-    catch
-      case e =>
-        val stringWriter = new StringWriter()
-        e.printStackTrace(new PrintWriter(stringWriter))
-        stringWriter.toString()
+    host.println("hallo")
+    val result =
+      try
+        ujson
+          .Obj(
+            "pads" -> ujson.Arr(ccPads.take(8).map(_.toJson()): _*),
+            "knobs" -> ujson.Arr(knobs.take(8).map(_.toJson()): _*),
+            "mode" -> modeCtx.current.map(_.name()).getOrElse(""),
+            "browserResults" -> (if !browser.isOpen() then ujson.Null
+                                 else browser.resultsColumn.toJson()),
+            "tracks" -> allTracks.toJson()
+          )
+          .toString
+      catch
+        case e =>
+          val stringWriter = new StringWriter()
+          e.printStackTrace(new PrintWriter(stringWriter))
+          stringWriter.toString()
+    host.println(result)
+    result
   }
 
   val (server, shutdown) = BlazeServerBuilder[IO]
