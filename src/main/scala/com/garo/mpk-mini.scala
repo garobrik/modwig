@@ -51,7 +51,8 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   })
 
   def leftSix[T](l: List[T]) = l.slice(0, 3) ++ l.slice(4, 7)
-  def rightSix[T](l: List[T]) = l.slice(5, 8) ++ l.slice(1, 4)
+  def rightSix[T](l: List[T], flip: Boolean = true) =
+    if flip then l.slice(5, 8) ++ l.slice(1, 4) else l.slice(1, 4) ++ l.slice(5, 8)
 
   val knobs =
     List
@@ -169,24 +170,25 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   }
 
   object mainModes {
-    val default: Mode = new Mode("Session Control") {
+    val trackMode: Mode = new Mode("Track Control") {
       override def dependents = List(browser.isOpen)
 
       val commitAndSwitch = createAction(
         "Commit",
         () => {
           browser.commitAction()
-          selectedTrackMode.replaceAction()
+          deviceMode.replaceAction()
         }
       )
+
       override def bindings =
         List(
-          ccPads(0) -> (if !browser.isOpen() then selectedTrackMode.replaceAction
+          ccPads(0) -> (if !browser.isOpen() then deviceMode.replaceAction
                         else selectedTrack.start.browseAction),
           ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
           ccPads(2) -> selectedTrack.deviceCursor.after.browseAction,
           ccPads(3) -> (if !browser.isOpen() then selectedTrack.duplicateAndUnarm else selectedTrack.end.browseAction),
-          ccPads(4) -> loops(0).triggerAction,
+          ButtonBinding(ccPads(4), loops(0).triggerAction, onLongPress = loopsMode.replaceAction),
           ccPads(5) -> metronome.toggle,
           ccPads(6) -> (if !browser.isOpen() then transport.tapTempo else commitAndSwitch),
           ccPads(7) -> (if !browser.isOpen() then transport.playAction else browser.cancelAction),
@@ -202,7 +204,22 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
     }
 
-    val selectedTrackMode = new Mode("Device Control") {
+    val loopsMode = new Mode("Loops Control") {
+      override def dependents = List(loops(0).loops.currentSize)
+      override def bindings =
+        ButtonBinding.list(
+          rightSix(ccPads, flip = false).zip(loops(0).loops.currentItems.map(_.clipBank.clips(0).toggle))
+        ) ++ RelativeBinding.list(
+          leftSix(knobs).zip(loops(0).loops.currentItems.map(_.volume))
+        ) ++ List(
+          ccPads(0) -> deviceMode.replaceAction,
+          ccPads(4) -> loops(0).triggerAction,
+          RelativeBinding(knobs(3), transport.postRecordTime, sensitivity = 4.0),
+          knobs(7) -> masterTrack.volume
+        )
+    }
+
+    val deviceMode: Mode = new Mode("Device Control") {
       val device = selectedTrack.deviceCursor
       val joystickPage = device.createTaggedRemoteControlsPage("XY", "xy")
 
@@ -213,7 +230,8 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       override def dependents = deviceModes.map(_.device.exists)
 
       override def bindings = List(deviceModes.find(_.device.exists()).getOrElse(genericMode)) ++ List(
-        ccPads(0) -> default.replaceAction,
+        ccPads(0) -> trackMode.replaceAction,
+        ButtonBinding(ccPads(4), loops(0).triggerAction, onLongPress = loopsMode.replaceAction),
         knobs(3) -> selectedTrack.volume,
         knobs(7) -> masterTrack.volume
       )
@@ -389,6 +407,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
       def currentLoop = loops(Math.max(loops.currentSize() - 2, 0))
       def nextLoop = loops(loops.currentSize() - 1)
+      def nextNextLoop = loops(loops.currentSize())
 
       override def onEnable() = {
         track.select()
@@ -410,78 +429,34 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       val triggerAction = createAction(
         "Trigger",
         () => {
-          val currentCurrentLoop = currentLoop
-          val currentCurrentClip = currentCurrentLoop.clipBank(0)
-          val currentNextLoop = nextLoop
-          val currentNextClip = currentNextLoop.clipBank(0)
-          if (transport.postRecordTime.get().beats == 0 && currentCurrentClip.isRecording()) {
-            currentCurrentLoop.clipBank(0).launch()
-            transport.postRecordTime.set(loopCursor.clipCursor.loopLength().ceilBar)
-          } else {
-            if (transport.postRecordTime.get().beats == 0) {
-              loopCursor.isPinned.set(true)
-              loopCursor.selectChannel(currentNextLoop)
-            }
-            currentNextClip.record()
-            currentNextClip.isPlaying.doAfterChanged(isPlaying =>
-              if (isPlaying) {
-                currentNextLoop.arm.set(false)
+          if (transport.isPlaying()) {
+            val currentCurrentLoop = currentLoop
+            val currentCurrentClip = currentCurrentLoop.clipBank(0)
+            val currentNextLoop = nextLoop
+            val currentNextClip = currentNextLoop.clipBank(0)
+            if (transport.postRecordTime.get().beats == 0 && currentCurrentClip.isRecording()) {
+              currentCurrentLoop.clipBank(0).launch()
+              transport.postRecordTime.set(loopCursor.clipCursor.loopLength().ceilBar)
+            } else {
+              if (transport.postRecordTime.get().beats == 0) {
+                loopCursor.isPinned.set(true)
+                loopCursor.selectChannel(currentNextLoop)
               }
-            )
-            currentNextLoop.duplicate()
+              currentNextClip.record()
+              currentNextClip.isPlaying.doAfterChanged(isPlaying =>
+                if (isPlaying) {
+                  currentNextLoop.arm.set(false)
+                }
+              )
+              currentNextLoop.duplicateAndUnarm()
+              nextNextLoop.name.set(
+                currentNextLoop.name().split(" ").last.toIntOption match {
+                  case Some(num) => (currentNextLoop.name().split(" ").dropRight(1) :+ (num + 1).toString).mkString(" ")
+                  case None      => currentNextLoop.name()
+                }
+              )
+            }
           }
-
-          // def triggerClip(offset: Int = 0): Unit = {
-          //   var vuMeterReadings = Seq.empty[Int]
-          //   currentIsSilent = Option(() => vuMeterReadings.sum.toDouble / vuMeterReadings.size.toDouble < 5)
-          //   var vuMeterCancel = Option.empty[() => Unit]
-          //   val currentNextLoop = loops((loops.currentSize() - 1) + offset)
-          //   host.println(s"next loop pos: ${currentNextLoop.position()}")
-          //   currentNextLoop.duplicate()
-
-          //   transport.cancelOnPause(
-          //     currentNextLoop
-          //       .clipBank(0)
-          //       .isRecording
-          //       .doAfterChanged(isRecording => {
-          //         if (isRecording) {
-          //           vuMeterCancel = Some(transport.onTick(_ => {
-          //             vuMeterReadings = fxTrack.vuMeterRMS() +: vuMeterReadings
-          //           }))
-          //         }
-          //       })
-          //   )
-          //   currentNextLoop.clipBank(0).record()
-          //   val transportCancel =
-          //     transport.doBeforeOffset(
-          //       transport.postRecordTime() + transport.tilNextBar,
-          //       () => {
-          //         vuMeterCancel.foreach(_())
-          //         val offset = if tryLoopDelete.get() && currentIsSilent.getOrElse(() => false)() then {
-          //           host.println(s"deleting ${currentNextLoop.position()}")
-          //           currentNextLoop.delete()
-          //           -1
-          //         } else 0
-          //         triggerClip(offset)
-          //       }
-          //     )
-          //   triggerCancel = Some(() => { vuMeterCancel.foreach(_()); transportCancel(); })
-          // }
-
-          // if (currentLoop.clipBank(0).isRecording()) {
-          //   triggerCancel.foreach(_())
-          //   nextLoop.clipBank.stop()
-          //   nextLoop.clipBank(0).delete()
-          //   if (currentIsSilent.getOrElse(() => false)()) {
-          //     currentLoop.delete()
-          //   } else if (transport.postRecordAction.get() == Transport.PostRecordAction.Off) {
-          //     currentLoop.clipBank(0).launch()
-          //   }
-          // } else {
-          //   triggerClip()
-          // }
-
-          // transport.playAction()
         }
       )
 
@@ -505,7 +480,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     new Runnable {
       override def run() = {
         pedal.modeCtx.set(pedal.modes(0))
-        modeCtx.set(mainModes.default)
+        modeCtx.set(mainModes.trackMode)
       }
     },
     1000

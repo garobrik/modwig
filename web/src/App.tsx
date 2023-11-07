@@ -236,7 +236,9 @@ const Tracks = () => {
         .filter(
           (track) =>
             ['Effect', 'Master'].every((type) => type !== track.type) &&
-            ['Loop', 'Metronome'].every((name) => !track.name.startsWith(name))
+            ['Loop', 'Layer', 'Metronome'].every(
+              (name) => !track.name.startsWith(name)
+            )
         )
         .map((track) => (
           <Box

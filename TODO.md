@@ -1,6 +1,5 @@
-- redo generic device controls
-- detect tap vs long hold
-- loop mixer
+- loop display
+- generic device controls paged
 - track/device metadata
 - what to do abt xtra pages
 - set up string studio knobs
