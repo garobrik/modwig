@@ -161,7 +161,7 @@ abstract class Mode(val name: Gettable[String] = "Unnamed")(implicit ext: Contro
 object Mode {
   type Bindings = List[ModeCtx | Mode | Binding[_, _]]
 
-  case class Page(name: String, onPressed: Bindings, onHeld: Bindings)
+  case class Page(name: Gettable[String], onPressed: Bindings, onHeld: Bindings)
   abstract class Paged(buttons: List[HardwareButton])(using ctx: ModeCtx, ext: ControllerExtension) extends Mode {
     def pages: List[Page]
 
@@ -171,11 +171,11 @@ object Mode {
       ButtonBinding(
         button,
         ext.createAction(
-          Gettable(() => pages.map(_.name).applyOrElse(idx, _ => ""), dependents),
+          pages.map(_.name).applyOrElse(idx, _ => Gettable("")),
           () => { page.set(idx); pageHeld.set(true) }
         ),
         onReleased = ext.createAction(
-          Gettable(() => pages.map(_.name).applyOrElse(idx, _ => ""), dependents),
+          pages.map(_.name).applyOrElse(idx, _ => Gettable("")),
           () => { page.set(idx); pageHeld.set(false) }
         )
       )

@@ -391,10 +391,9 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
           override val bindings = List(
             new Mode.Paged(notePads.take(8)) {
-              override def dependents = instrument.map(_.displayedValue)
               override def pages = List.range(0, 8).map { idx =>
                 Mode.Page(
-                  instrument(idx).displayedValue(),
+                  instrument(idx).displayedValue,
                   RelativeBinding.list(
                     leftSix(knobs)
                       .zip(List(instrument(idx), params(idx)(0), velocity(idx), model(idx), params(idx)(1), gain(idx)))

@@ -1,4 +1,6 @@
-- fix drums
+- device chains
+- delete loops, don't start many loops at once
+- paged mode long hold to switch
 - loop display
 - generic device controls paged
 - track/device metadata
