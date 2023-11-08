@@ -170,6 +170,10 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
   }
 
   object mainModes {
+    val joystickBindings = AbsoluteBinding.list(
+      joystick.mods.zip(selectedTrack.deviceCursor.createTaggedRemoteControlsPage("XY", "xy").controls)
+    )
+
     val trackMode: Mode = new Mode("Track Control") {
       override def dependents = List(browser.isOpen)
 
@@ -182,7 +186,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       )
 
       override def bindings =
-        List(
+        joystickBindings ++ List(
           ccPads(0) -> (if !browser.isOpen() then deviceMode.replaceAction
                         else selectedTrack.start.browseAction),
           ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
@@ -207,7 +211,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     val loopsMode = new Mode("Loops Control") {
       override def dependents = List(loops(0).loops.currentSize)
       override def bindings =
-        ButtonBinding.list(
+        joystickBindings ++ ButtonBinding.list(
           rightSix(ccPads, flip = false).zip(loops(0).loops.currentItems.map(_.clipBank.clips(0).toggle))
         ) ++ RelativeBinding.list(
           leftSix(knobs).zip(loops(0).loops.currentItems.map(_.volume))
@@ -239,7 +243,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       val genericMode = new Mode("Generic Device") {
         override def dependents = device.remoteControls.pageCount +: device.remoteControls.controls.map(_.exists)
         override def bindings =
-          AbsoluteBinding.list(joystick.mods.zip(joystickPage.controls)) ++ leftSix(knobs)
+          joystickBindings ++ leftSix(knobs)
             .zip(leftSix(device.remoteControls.controls))
             .map { case (knob, control) =>
               if control.exists() then RelativeBinding(knob, control)
@@ -260,30 +264,40 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           import this.device._
 
           def allKnobs = List(
-            "VCO1/ FM" -> List(
-              List(vco1.shape, vco1.volume, vco1.tune, vco1.tuneMod, vco1.shapeMod),
-              List(vco1.fm, fmModSrc, fmModDepth, filterFM, filtFMModSrc, filtFMModDepth)
-            ),
-            "VCO2/3" -> List(
-              List(vco2.shape, vco2.volume, vco2.tune, vco2.sync),
-              List(vco3.shape, vco3.volume, vco3.tune, vco3.sync)
+            "VCOs" -> List(
+              vcos.map(_.shape) ++ vcos.map(_.volume),
+              vcos.map(_.tune) ++ List(vco2.sync, vco3.sync)
             ),
             "Filter" -> List(
-              List(feedback, noise, pinkWhite, filterFreq, filterResonance, filterKeyFollow),
+              List(filterFreq, filterResonance, filterModel, filterKeyFollow),
               List(filtModSrc, filtMod2Src, resModSrc, filtModDepth, filtMod2Depth, resModDepth)
             ),
+            "FM/ Noise&Kbd" -> List(
+              List(vco1.fm, fmModSrc, fmModDepth, filterFM, filtFMModSrc, filtFMModDepth),
+              List(drive, feedback, noise, voiceStack, polyMode, glide)
+            ),
+            "Tune/ Shape Mod" -> List(
+              vcos.map(_.shapeMod) ++ List(shapeModDepth, shapeModSrc),
+              vcos.map(_.tuneMod) ++ List(tuneModDepth, tuneModSrc)
+            ),
             "Env" -> env.map(env => List(env.attack, env.decay, env.sustain, env.release, env.velocity, env.keyFollow)),
-            "LFO" -> lfo.map(lfo => List(lfo.waveform, lfo.delay, lfo.restart, lfo.sync, lfo.rate, lfo.phase)),
-            "KBD / VCO Mod" -> List(
-              List(tuneModSrc, shapeModSrc, shapeModSrc, tuneModDepth, shapeModDepth, shapeModDepth),
-              List(polyMode, voiceStack, drive, glide, vibrato)
+            "LFO" -> lfo.map(lfo =>
+              List(
+                lfo.waveform,
+                lfo.delay,
+                lfo.restart,
+                lfo.sync,
+                lfo.rate,
+                if lfo.idx == 0 then vibrato else lfo.phase
+              )
             )
           )
 
           override val bindings =
             List(
               new Mode.Paged(rightSix(ccPads)) {
-                override def dependents = super.dependents ++ List(oscModel, hpfModel, vcfModel, env1Model, env2Model)
+                override def dependents =
+                  super.dependents ++ List(oscModel, hpfModel, filterModel, env1Model, env2Model)
 
                 def pages = allKnobs.map { case (name, pageKnobs) =>
                   Mode.Page(
@@ -448,7 +462,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
                   currentNextLoop.arm.set(false)
                 }
               )
-              currentNextLoop.duplicateAndUnarm()
+              currentNextLoop.duplicate()
               nextNextLoop.name.set(
                 currentNextLoop.name().split(" ").last.toIntOption match {
                   case Some(num) => (currentNextLoop.name().split(" ").dropRight(1) :+ (num + 1).toString).mkString(" ")
@@ -486,28 +500,22 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     1000
   )
 
-  def uiState() = {
-    host.println("hallo")
-    val result =
-      try
-        ujson
-          .Obj(
-            "pads" -> ujson.Arr(ccPads.take(8).map(_.toJson()): _*),
-            "knobs" -> ujson.Arr(knobs.take(8).map(_.toJson()): _*),
-            "mode" -> modeCtx.current.map(_.name()).getOrElse(""),
-            "browserResults" -> (if !browser.isOpen() then ujson.Null
-                                 else browser.resultsColumn.toJson()),
-            "tracks" -> allTracks.toJson()
-          )
-          .toString
-      catch
-        case e =>
-          val stringWriter = new StringWriter()
-          e.printStackTrace(new PrintWriter(stringWriter))
-          stringWriter.toString()
-    host.println(result)
-    result
-  }
+  def uiState() = try
+    ujson
+      .Obj(
+        "pads" -> ujson.Arr(ccPads.take(8).map(_.toJson()): _*),
+        "knobs" -> ujson.Arr(knobs.take(8).map(_.toJson()): _*),
+        "mode" -> modeCtx.current.map(_.name()).getOrElse(""),
+        "browserResults" -> (if !browser.isOpen() then ujson.Null
+                             else browser.resultsColumn.toJson()),
+        "tracks" -> allTracks.toJson()
+      )
+      .toString
+  catch
+    case e =>
+      val stringWriter = new StringWriter()
+      e.printStackTrace(new PrintWriter(stringWriter))
+      stringWriter.toString()
 
   val (server, shutdown) = BlazeServerBuilder[IO]
     .bindHttp(8080, "0.0.0.0")

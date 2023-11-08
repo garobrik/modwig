@@ -87,7 +87,7 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
   class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val oscModel = param(85)
     val hpfModel = param(139)
-    val vcfModel = param(147)
+    val filterModel = param(147)
     val env1Model = param(38)
     val env2Model = param(49)
 
@@ -146,7 +146,7 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
     }
     val env = List(Env(33), Env(44))
 
-    class LFO(idx: Int, firstParamID: Int) {
+    class LFO(val idx: Int, firstParamID: Int) {
       val offset = 10 * idx
       val sync = param(55 + offset)
       val restart = param(56 + offset)

@@ -1,3 +1,4 @@
+- fix drums
 - loop display
 - generic device controls paged
 - track/device metadata
