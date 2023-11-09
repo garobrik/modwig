@@ -12,6 +12,7 @@ import javax.sound.midi.MidiMessage
 import com.garo
 import java.net.Inet4Address
 import java.net.InetAddress
+import scala.annotation.targetName
 
 trait Serializable {
   def toJson(): ujson.Value
@@ -156,7 +157,20 @@ abstract class Mode(val name: Gettable[String] = "Unnamed")(implicit ext: Contro
 object Mode {
   type Bindings = List[ModeCtx | Mode | Binding[_, _]]
 
-  case class Page(name: Gettable[String], onPressed: Bindings, onHeld: Bindings)
+  case class Page(pressedName: Gettable[String], onPressed: Bindings, heldName: Gettable[String], onHeld: Bindings)
+  object Page {
+    def from(page: List[(Gettable[String], Bindings)]) = Page(page(0)._1, page(0)._2, page(1)._1, page(1)._2)
+  }
+  def pages(knobs: List[RelativeHardwareKnob], pages: List[List[(Gettable[String], List[Parameter])]]) =
+    pages.map(_.map { (name, params) => (name, RelativeBinding.list(knobs.zip(params))) }).map(Page.from)
+  @targetName("pagesString")
+  def pages(knobs: List[RelativeHardwareKnob], pages: List[List[(String, List[Parameter])]]) =
+    pages.map(_.map { (name, params) => (Gettable(name), RelativeBinding.list(knobs.zip(params))) }).map(Page.from)
+  def pages(knobs: List[RelativeHardwareKnob], pages: List[(Gettable[String], List[Parameter])]*): List[Page] =
+    Mode.pages(knobs, pages.toList)
+  @targetName("pagesString")
+  def pages(knobs: List[RelativeHardwareKnob], pages: List[(String, List[Parameter])]*): List[Page] =
+    Mode.pages(knobs, pages.toList)
   abstract class Paged(buttons: List[HardwareButton])(using ctx: ModeCtx, ext: ControllerExtension) extends Mode {
     def pages: List[Page]
 
@@ -166,12 +180,14 @@ object Mode {
       ButtonBinding(
         button,
         Action(
-          pages.map(_.name).applyOrElse(idx, _ => Gettable("")),
-          () => { page.set(idx); pageHeld.set(true) }
+          pages.map(_.pressedName).applyOrElse(idx, _ => Gettable("")),
+          () => { if (page() != idx) pageHeld.set(false); page.set(idx); },
+          page.map(p => if p == idx then 1.0 else 0.0)
         ),
-        onReleased = Action(
-          pages.map(_.name).applyOrElse(idx, _ => Gettable("")),
-          () => { page.set(idx); pageHeld.set(false) }
+        onLongPress = Action(
+          pages.map(_.heldName).applyOrElse(idx, _ => Gettable("")),
+          () => { pageHeld.set(page() != idx || !pageHeld()); page.set(idx); },
+          page.map(p => if p == idx then 1.0 else 0.0)
         )
       )
     }
@@ -179,7 +195,9 @@ object Mode {
     override def dependents = page +: pageHeld
     override def bindings = {
       val curPage = pages.zipWithIndex.filter(_._2 == page()).map(_._1)
-      val curBindings = curPage.flatMap(curPage => if pageHeld(page())() then curPage.onHeld else curPage.onPressed)
+      val curBindings = curPage.flatMap(curPage =>
+        if (pageHeld(page())() && !curPage.onHeld.isEmpty) then curPage.onHeld else curPage.onPressed
+      )
       curBindings ++ pageSwapBindings
     }
   }
@@ -816,6 +834,9 @@ given Conversion[String, Gettable[String]] = t => Gettable(t)
 given Conversion[Double, Gettable[Double]] = t => Gettable(t)
 given getString2Opt: Conversion[Gettable[String], Option[Gettable[String]]] = Option.apply
 given Conversion[Gettable[Double], Option[Gettable[Double]]] = Option.apply
+given Conversion[(String, List[Parameter]), (Gettable[String], List[Parameter])] = { (name, params) =>
+  (Gettable(name), params)
+}
 given Conversion[String, Option[Gettable[String]]] = Option.apply
 given Conversion[Double, Option[Gettable[Double]]] = Option.apply
 

@@ -298,13 +298,18 @@ const Bindings = () => {
             gap: `${theme.space}vw`,
           }}
         >
-          {state.pads.map(({ isPressed, bindings: [binding] }) => (
-            <Pad
-              isPressed={isPressed || binding?.value === 1}
-              isHalfPressed={binding?.value === 0.5}
-              text={binding?.name}
-            />
-          ))}
+          {state.pads.map(
+            ({ isPressed, bindings: [binding, ...otherBindings] }) => (
+              <Pad
+                isPressed={isPressed || binding?.value === 1}
+                isHalfPressed={binding?.value === 0.5}
+                text={binding?.name}
+                topRightText={
+                  otherBindings.length > 0 ? otherBindings[0].name : undefined
+                }
+              />
+            )
+          )}
         </div>
         <div
           style={{
@@ -336,13 +341,17 @@ type PadProps = {
   isPressed: boolean;
   isHalfPressed: boolean;
   text: string;
+  topRightText?: string;
 };
-const Pad = ({ isPressed, isHalfPressed, text }: PadProps) => {
+const Pad = ({ isPressed, isHalfPressed, text, topRightText }: PadProps) => {
   return (
     <Box
       style={{
         aspectRatio: '1/1',
+        flexDirection: 'column',
+        gap: 0,
       }}
+      space="md"
       neuShadow={{
         inset: isPressed,
         ...(!isHalfPressed
@@ -353,15 +362,22 @@ const Pad = ({ isPressed, isHalfPressed, text }: PadProps) => {
             }),
       }}
     >
-      <Text
-        style={{
-          margin: 'auto',
-          textAlign: 'center',
-          overflowWrap: 'anywhere',
-        }}
-      >
-        {text}
-      </Text>
+      {topRightText && (
+        <Text style={{ textAlign: 'end' }} size="sm" weight="medium">
+          {topRightText}
+        </Text>
+      )}
+      <div style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <Text
+          style={{
+            textAlign: 'center',
+            overflowWrap: 'anywhere',
+          }}
+          scale={6}
+        >
+          {text}
+        </Text>
+      </div>
     </Box>
   );
 };
@@ -546,7 +562,7 @@ const Box = forwardRef<HTMLDivElement, BoxProps>(
 );
 
 type TextProps = React.JSX.IntrinsicElements['span'] & {
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   weight?: 'light' | 'medium' | 'bold';
   scale?: number;
 };
@@ -563,7 +579,8 @@ const Text = ({
       ? Math.pow(scale / props.children.length, 0.3)
       : 1;
   const fontSize =
-    fontScaleFactor * (size === 'sm' ? 1.5 : size === 'md' ? 2 : 2.5);
+    fontScaleFactor *
+    (size === 'xs' ? 1.0 : size === 'sm' ? 1.5 : size === 'md' ? 2 : 2.5);
   const fontWeight =
     weight === 'light' ? 400 : weight === 'medium' ? 700 : 1000;
   return (

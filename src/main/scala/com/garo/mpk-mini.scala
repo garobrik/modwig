@@ -196,7 +196,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         knobs(2) -> browser
       )
 
-      val normalBindings: Mode.Bindings = List(
+      def normalBindings: Mode.Bindings = List(
         ccPads(0) -> deviceMode.replaceAction,
         ccPads(1) -> application.undo,
         ccPads(2) -> application.redo,
@@ -223,15 +223,15 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         joystickBindings ++ (if browser.isOpen() then browserBindings else normalBindings)
     }
 
-    val loopsMode = new Mode("Loops Control") {
+    val loopsMode = new Mode("Loop Mixer") {
       override def dependents = List(loops(0).loops.currentSize)
       override def bindings =
         joystickBindings ++
-          rightSix(ccPads, flip = false).zip(loops(0).loops.currentItems).map { (button, loop) =>
+          rightSix(ccPads, flip = false).zip(loops(0).loops.currentItems.dropRight(1)).map { (button, loop) =>
             ButtonBinding(button, loop.clipBank.clips(0).toggle, loop.delete)
           } // .map(_.clipBank.clips(0).toggle)
           ++ RelativeBinding.list(
-            leftSix(knobs).zip(loops(0).loops.currentItems.map(_.volume))
+            leftSix(knobs).zip(loops(0).loops.currentItems.dropRight(1).map(_.volume))
           ) ++ List(
             ccPads(0) -> deviceMode.replaceAction,
             ccPads(4) -> loops(0).triggerAction,
@@ -280,49 +280,51 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         new DeviceMode(Diva.Device(device)) {
           import this.device._
 
-          def allKnobs = List(
-            "VCOs" -> List(
-              vcos.map(_.shape) ++ vcos.map(_.volume),
-              vcos.map(_.tune) ++ List(vco2.sync, vco3.sync)
-            ),
-            "Filter" -> List(
-              List(filterFreq, filterResonance, filterModel, filterKeyFollow),
-              List(filtModSrc, filtMod2Src, resModSrc, filtModDepth, filtMod2Depth, resModDepth)
-            ),
-            "FM/ Noise&Kbd" -> List(
-              List(vco1.fm, fmModSrc, fmModDepth, filterFM, filtFMModSrc, filtFMModDepth),
-              List(drive, feedback, noise, voiceStack, polyMode, glide)
-            ),
-            "Tune/ Shape Mod" -> List(
-              vcos.map(_.shapeMod) ++ List(shapeModDepth, shapeModSrc),
-              vcos.map(_.tuneMod) ++ List(tuneModDepth, tuneModSrc)
-            ),
-            "Env" -> env.map(env => List(env.attack, env.decay, env.sustain, env.release, env.velocity, env.keyFollow)),
-            "LFO" -> lfo.map(lfo =>
-              List(
-                lfo.waveform,
-                lfo.delay,
-                lfo.restart,
-                lfo.sync,
-                lfo.rate,
-                if lfo.idx == 0 then vibrato else lfo.phase
-              )
-            )
-          )
-
           override val bindings =
             List(
               new Mode.Paged(rightSix(ccPads)) {
                 override def dependents =
                   super.dependents ++ List(oscModel, hpfModel, filterModel, env1Model, env2Model)
 
-                def pages = allKnobs.map { case (name, pageKnobs) =>
-                  Mode.Page(
-                    name,
-                    RelativeBinding.list(leftSix(knobs).zip(pageKnobs(0))),
-                    RelativeBinding.list(leftSix(knobs).zip(pageKnobs(1)))
+                def pages = Mode.pages(
+                  leftSix(knobs),
+                  List(
+                    "VCOs" -> (vcos.map(_.shape) ++ vcos.map(_.volume)),
+                    "Tune" -> (vcos.map(_.tune) ++ List(vco2.sync, vco3.sync))
+                  ),
+                  List(
+                    "Filter" -> List(filterFreq, filterResonance, filterModel, filterKeyFollow),
+                    "Mod" -> List(filtModSrc, filtMod2Src, resModSrc, filtModDepth, filtMod2Depth, resModDepth)
+                  ),
+                  List(
+                    "FM" -> List(vco1.fm, fmModSrc, fmModDepth, filterFM, filtFMModSrc, filtFMModDepth),
+                    "Noise" -> List(drive, feedback, noise, voiceStack, polyMode, glide)
+                  ),
+                  List(
+                    "Tune Mod" -> (vcos.map(_.shapeMod) ++ List(shapeModDepth, shapeModSrc)),
+                    "Shape Mod" -> (vcos.map(_.tuneMod) ++ List(tuneModDepth, tuneModSrc))
+                  ),
+                  env.map(env =>
+                    s"Env ${env.idx + 1}" -> List(
+                      env.attack,
+                      env.decay,
+                      env.sustain,
+                      env.release,
+                      env.velocity,
+                      env.keyFollow
+                    )
+                  ),
+                  lfo.map(lfo =>
+                    s"LFO ${lfo.idx + 1}" -> List(
+                      lfo.waveform,
+                      lfo.delay,
+                      lfo.restart,
+                      lfo.sync,
+                      lfo.rate,
+                      if lfo.idx == 0 then vibrato else lfo.phase
+                    )
                   )
-                }
+                )
               },
               joystick.upMod.CCBinding(1),
               joystick.leftMod.CCBinding(2),
@@ -335,55 +337,6 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           val layer = this.device.layer(0)
           import layer._
 
-          def allKnobs = resonator.map(res =>
-            s"Object ${res.name}" -> List(
-              List(
-                res.objectType,
-                res.release,
-                res.decay,
-                if res.isTube then res.radius else res.density,
-                res.tone,
-                res.material
-              ),
-              List(res.lowCut, res.decayKeyTrack, res.decayVeloTrack, res.hitPos, res.hitPosVeloTrack, res.hitPosRand)
-            ),
-          ) ++ List(
-            "Mallet" -> List(
-              List(malletStiffness, malletNoise, malletVol, malletColor, malletVolDirect),
-              List(
-                malletStiffnessKeyTrack,
-                malletNoiseKeyTrack,
-                malletVolKeyTrack,
-                malletStiffnessVeloTrack,
-                malletNoiseVeloTrack,
-                malletVolVeloTrack
-              )
-            ),
-            "Noise" -> List(
-              List(
-                noiseFiltFreq,
-                noiseDensity,
-                noiseVol,
-                noiseFiltType,
-                if noiseFiltType.displayedValue() == "HP+LP" then noiseFiltWidth else noiseFiltQ,
-                noiseVolDirect
-              ),
-              List(
-                noiseFiltFreqKey,
-                noiseDensityKey,
-                noiseVolKeyTrack,
-                noiseFiltFreqVelo,
-                noiseDensityVelo,
-                noiseVolVeloTrack
-              )
-            ),
-            "LFO / Env" -> List(
-              List(lfoType, lfoSyncRate, lfoDelay, noiseVolLFO, noiseDensityLFO, noiseFiltFreqLFO),
-              List(noiseEnvA, noiseEnvD, noiseEnvS, noiseEnvR, noiseFiltFreqEnv, noiseDensityEnv)
-            ),
-            "Balance" -> List(List(balance, unisonOn, coupled, balanceKeyFollow, vibratoAmount, gain), List())
-          )
-
           override val bindings = List(
             new Mode.Paged(rightSix(ccPads)) {
               override def dependents = super.dependents ++ resonator
@@ -393,13 +346,67 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
                 lfoType
               )
 
-              def pages = allKnobs.map { case (name, pageKnobs) =>
-                Mode.Page(
-                  name,
-                  RelativeBinding.list(leftSix(knobs).zip(pageKnobs(0))),
-                  RelativeBinding.list(leftSix(knobs).zip(pageKnobs(1)))
+              def pages = Mode.pages(
+                leftSix(knobs),
+                resonator.map(res =>
+                  List(
+                    s"Object ${res.name}" -> List(
+                      res.objectType,
+                      res.release,
+                      res.decay,
+                      if res.isTube then res.radius else res.density,
+                      res.tone,
+                      res.material
+                    ),
+                    "Kbd/HitPos" -> List(
+                      res.lowCut,
+                      res.decayKeyTrack,
+                      res.decayVeloTrack,
+                      res.hitPos,
+                      res.hitPosVeloTrack,
+                      res.hitPosRand
+                    )
+                  ),
+                ) ++ List(
+                  List(
+                    "Mallet" -> List(malletStiffness, malletNoise, malletVol, malletColor, malletVolDirect),
+                    "Kbd" -> List(
+                      malletStiffnessKeyTrack,
+                      malletNoiseKeyTrack,
+                      malletVolKeyTrack,
+                      malletStiffnessVeloTrack,
+                      malletNoiseVeloTrack,
+                      malletVolVeloTrack
+                    )
+                  ),
+                  List(
+                    "Noise" -> List(
+                      noiseFiltFreq,
+                      noiseDensity,
+                      noiseVol,
+                      noiseFiltType,
+                      if noiseFiltType.displayedValue() == "HP+LP" then noiseFiltWidth else noiseFiltQ,
+                      noiseVolDirect
+                    ),
+                    "Kbd" -> List(
+                      noiseFiltFreqKey,
+                      noiseDensityKey,
+                      noiseVolKeyTrack,
+                      noiseFiltFreqVelo,
+                      noiseDensityVelo,
+                      noiseVolVeloTrack
+                    )
+                  ),
+                  List(
+                    "LFO" -> List(lfoType, lfoSyncRate, lfoDelay, noiseVolLFO, noiseDensityLFO, noiseFiltFreqLFO),
+                    "Env" -> List(noiseEnvA, noiseEnvD, noiseEnvS, noiseEnvR, noiseFiltFreqEnv, noiseDensityEnv)
+                  ),
+                  List(
+                    "Balance" -> List(balance, unisonOn, coupled, balanceKeyFollow, vibratoAmount, gain),
+                    "" -> List()
+                  )
                 )
-              }
+              )
             }
           )
         },
@@ -415,6 +422,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
                     leftSix(knobs)
                       .zip(List(instrument(idx), params(idx)(0), velocity(idx), model(idx), params(idx)(1), gain(idx)))
                   ),
+                  instrument(idx).displayedValue,
                   RelativeBinding.list(leftSix(knobs).zip(List.range(2, 8).map(params(idx)(_))))
                 )
               }

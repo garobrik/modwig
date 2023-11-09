@@ -136,17 +136,18 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
     val filtFMModSrc = param(163, "Filt FM Mod Src")
     val filtFMModDepth = param(164, "Filt FM Mod Src")
 
-    class Env(i: Int) {
-      val attack = param(i)
-      val decay = param(i + 1)
-      val sustain = param(i + 2)
-      val release = param(i + 3)
-      val velocity = param(i + 4)
-      val keyFollow = param(i + 10, "KeyTrack")
+    class Env(val idx: Int) {
+      private val offset = 33 + idx * 11
+      val attack = param(offset)
+      val decay = param(offset + 1)
+      val sustain = param(offset + 2)
+      val release = param(offset + 3)
+      val velocity = param(offset + 4)
+      val keyFollow = param(offset + 10, "KeyTrack")
     }
-    val env = List(Env(33), Env(44))
+    val env = List(0, 1).map(Env(_))
 
-    class LFO(val idx: Int, firstParamID: Int) {
+    class LFO(val idx: Int) {
       val offset = 10 * idx
       val sync = param(55 + offset)
       val restart = param(56 + offset)
@@ -160,7 +161,7 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
       val rateMod = param(64 + offset)
       val polarity = param(272 + idx)
     }
-    val lfo = List(LFO(0, 55), LFO(1, 65))
+    val lfo = List(0, 1).map(LFO(_))
   }
 }
 

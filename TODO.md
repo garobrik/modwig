@@ -1,6 +1,5 @@
 - better device chain control
-- delete loops, don't start many loops at once
-- paged mode long hold to switch
+- don't start many loops at once
 - loop display
 - generic device controls paged
 - track/device metadata
