@@ -17,6 +17,7 @@ import com.bitwig.extension.controller.api.{
   SpecificDevice => _,
   Parameter => _,
   HardwareActionBindable => _,
+  Action => _,
   _
 }
 import com.bitwig.extension.controller.{api => bitwig}
@@ -129,7 +130,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         override def bindings = List(control -> mainModes.loops(0).triggerAction)
       },
       new Mode("Kick") {
-        val kickAction = createAction(
+        val kickAction = Action(
           "Kick",
           () => padInput.sendRawMidiEvent(ShortMidiMessage.NOTE_ON + 1, 0, 127)
         )
@@ -138,7 +139,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     )
 
     modes.foreach(_.setAction)
-    val toggleModeAction = createAction(
+    val toggleModeAction = Action(
       "Toggle Pedal Function",
       () => {
         val currentModeIdx = modes.indexOf(modeCtx.current.getOrElse(modes.head))
@@ -151,7 +152,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
   object metronome {
     val track = TrackCursor("METRONOME", "Metronome", true)
-    val toggle = createAction(
+    val toggle = Action(
       "Metronome",
       () => {
         track.clipBank(0).launchWith(Some(Transport.LaunchQ.None), Some(Transport.LaunchMode.Synced))
@@ -177,7 +178,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
     val trackMode: Mode = new Mode("Track Control") {
       override def dependents = List(browser.isOpen)
 
-      val commitAndSwitch = createAction(
+      val commitAndSwitch = Action(
         "Commit",
         () => {
           browser.commitAction()
@@ -185,42 +186,58 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         }
       )
 
-      override def bindings =
-        joystickBindings ++ List(
-          ccPads(0) -> (if !browser.isOpen() then deviceMode.replaceAction
-                        else selectedTrack.start.browseAction),
-          ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
-          ccPads(2) -> selectedTrack.deviceCursor.after.browseAction,
-          ccPads(3) -> (if !browser.isOpen() then selectedTrack.duplicateAndUnarm else selectedTrack.end.browseAction),
-          ButtonBinding(ccPads(4), loops(0).triggerAction, onLongPress = loopsMode.replaceAction),
-          ccPads(5) -> metronome.toggle,
-          ccPads(6) -> (if !browser.isOpen() then transport.tapTempo else commitAndSwitch),
-          ccPads(7) -> (if !browser.isOpen() then transport.playAction else browser.cancelAction),
-          knobs(0) -> selectedTrack,
-          knobs(1) -> selectedTrack.deviceCursor,
-          knobs(2).asButton -> selectedTrack.deviceCursor.replace.browseIfClosedAction,
-          knobs(2) -> browser,
-          knobs(3) -> selectedTrack.volume,
-          RelativeBinding(knobs(4), transport.tempo, sensitivity = 0.1),
-          RelativeBinding(knobs(5), transport.postRecordTime, sensitivity = 4.0),
-          knobs(7) -> masterTrack.volume
-        )
+      val browserBindings: Mode.Bindings = List(
+        ccPads(0) -> selectedTrack.start.browseAction,
+        ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
+        ccPads(2) -> selectedTrack.deviceCursor.after.browseAction,
+        ccPads(3) -> selectedTrack.end.browseAction,
+        ccPads(6) -> commitAndSwitch,
+        ccPads(7) -> browser.cancelAction,
+        knobs(2) -> browser
+      )
 
+      val normalBindings: Mode.Bindings = List(
+        ccPads(0) -> deviceMode.replaceAction,
+        ccPads(1) -> application.undo,
+        ccPads(2) -> application.redo,
+        ccPads(3) -> selectedTrack.duplicateAndUnarm,
+        ButtonBinding(
+          ccPads(4),
+          loops(0).triggerAction,
+          onLongPress = loopsMode.replaceAction
+        ),
+        ccPads(5) -> selectedTrack.arm.toggle,
+        ButtonBinding(ccPads(6), transport.tapTempo, onLongPress = metronome.toggle),
+        ccPads(7) -> transport.playAction,
+        knobs(0) -> selectedTrack,
+        knobs(1) -> selectedTrack.deviceCursor,
+        knobs(2).asButton -> selectedTrack.deviceCursor.replace.browseIfClosedAction,
+        knobs(2) -> browser,
+        knobs(3) -> selectedTrack.volume,
+        RelativeBinding(knobs(4), transport.tempo, sensitivity = 0.1),
+        RelativeBinding(knobs(5), transport.postRecordTime, sensitivity = 4.0),
+        knobs(7) -> masterTrack.volume
+      )
+
+      override def bindings =
+        joystickBindings ++ (if browser.isOpen() then browserBindings else normalBindings)
     }
 
     val loopsMode = new Mode("Loops Control") {
       override def dependents = List(loops(0).loops.currentSize)
       override def bindings =
-        joystickBindings ++ ButtonBinding.list(
-          rightSix(ccPads, flip = false).zip(loops(0).loops.currentItems.map(_.clipBank.clips(0).toggle))
-        ) ++ RelativeBinding.list(
-          leftSix(knobs).zip(loops(0).loops.currentItems.map(_.volume))
-        ) ++ List(
-          ccPads(0) -> deviceMode.replaceAction,
-          ccPads(4) -> loops(0).triggerAction,
-          RelativeBinding(knobs(3), transport.postRecordTime, sensitivity = 4.0),
-          knobs(7) -> masterTrack.volume
-        )
+        joystickBindings ++
+          rightSix(ccPads, flip = false).zip(loops(0).loops.currentItems).map { (button, loop) =>
+            ButtonBinding(button, loop.clipBank.clips(0).toggle, loop.delete)
+          } // .map(_.clipBank.clips(0).toggle)
+          ++ RelativeBinding.list(
+            leftSix(knobs).zip(loops(0).loops.currentItems.map(_.volume))
+          ) ++ List(
+            ccPads(0) -> deviceMode.replaceAction,
+            ccPads(4) -> loops(0).triggerAction,
+            RelativeBinding(knobs(3), transport.postRecordTime, sensitivity = 4.0),
+            knobs(7) -> masterTrack.volume
+          )
     }
 
     val deviceMode: Mode = new Mode("Device Control") {
@@ -428,7 +445,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
       val setLengthMode = new Mode("Set Length") {
         val actions = List(1, 2, 3, 4, 6, 8, 12, 16).map(length =>
-          createAction(
+          Action(
             s"Set Length To $length",
             () => { transport.postRecordTime.set(BeatTime.bars(length)); popAction() }
           )
@@ -439,7 +456,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
       var triggerCancel = Option.empty[() => Unit]
       var currentIsSilent = Option.empty[() => Boolean]
-      val triggerAction = createAction(
+      val triggerAction = Action(
         "Trigger",
         () => {
           if (transport.isPlaying()) {

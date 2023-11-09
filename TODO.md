@@ -1,4 +1,4 @@
-- device chains
+- better device chain control
 - delete loops, don't start many loops at once
 - paged mode long hold to switch
 - loop display
