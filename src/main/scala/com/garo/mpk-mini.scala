@@ -175,61 +175,54 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
       joystick.mods.zip(selectedTrack.deviceCursor.createTaggedRemoteControlsPage("XY", "xy").controls)
     )
 
-    val trackMode: Mode = new Mode("Track Control") {
-      override def dependents = List(browser.isOpen)
+    object trackMode extends Mode("Track Control") {
+      val pickTrackMode = new Mode("Pick Track") {
+        val pickActions = mainTrackBank.tracks.map(t =>
+          Action(
+            t.name,
+            () => { selectedTrack.selectChannel(t); trackMode.replaceAction() },
+            t.isSelected.map(if _ then 1.0 else 0.0)
+          )
+        )
 
-      val commitAndSwitch = Action(
-        "Commit",
-        () => {
-          browser.commitAction()
-          deviceMode.replaceAction()
-        }
-      )
-
-      val browserBindings: Mode.Bindings = List(
-        ccPads(0) -> selectedTrack.start.browseAction,
-        ccPads(1) -> selectedTrack.deviceCursor.before.browseAction,
-        ccPads(2) -> selectedTrack.deviceCursor.after.browseAction,
-        ccPads(3) -> selectedTrack.end.browseAction,
-        ccPads(6) -> commitAndSwitch,
-        ccPads(7) -> browser.cancelAction,
-        knobs(2) -> browser
-      )
-
-      def normalBindings: Mode.Bindings = List(
-        ccPads(0) -> deviceMode.replaceAction,
-        ccPads(1) -> application.undo,
-        ccPads(2) -> application.redo,
-        ccPads(3) -> selectedTrack.duplicateAndUnarm,
-        ButtonBinding(
-          ccPads(4),
-          loops(0).triggerAction,
-          onLongPress = loopsMode.replaceAction
-        ),
-        ccPads(5) -> selectedTrack.arm.toggle,
-        ButtonBinding(ccPads(6), transport.tapTempo, onLongPress = metronome.toggle),
-        ccPads(7) -> transport.playAction,
-        knobs(0) -> selectedTrack,
-        knobs(1) -> selectedTrack.deviceCursor,
-        knobs(2).asButton -> selectedTrack.deviceCursor.replace.browseIfClosedAction,
-        knobs(2) -> browser,
-        knobs(3) -> selectedTrack.volume,
-        RelativeBinding(knobs(4), transport.tempo, sensitivity = 0.1),
-        RelativeBinding(knobs(5), transport.postRecordTime, sensitivity = 4.0),
-        knobs(7) -> masterTrack.volume
-      )
+        override def dependents = super.dependents :+ mainTrackBank.channelCount
+        override def bindings = ccPads
+          .take(8)
+          .zip(mainTrackBank.currentItems)
+          .zip(pickActions)
+          .map { case ((pad, track), pick) =>
+            ButtonBinding(pad, pick, onLongPress = track.duplicateAndUnarm)
+          }
+      }
 
       override def bindings =
-        joystickBindings ++ (if browser.isOpen() then browserBindings else normalBindings)
+        joystickBindings ++ List(
+          ButtonBinding(ccPads(0), pickTrackMode.replaceAction, onLongPress = deviceMode.replaceAction),
+          ccPads(1) -> application.undo,
+          ccPads(2) -> application.redo,
+          ButtonBinding(
+            ccPads(4),
+            loops(0).triggerAction,
+            onLongPress = loopsMode.replaceAction
+          ),
+          ccPads(5) -> selectedTrack.arm.toggle,
+          ButtonBinding(ccPads(6), transport.tapTempo, onLongPress = metronome.toggle),
+          ccPads(7) -> transport.playAction,
+          knobs(2) -> selectedTrack.pan,
+          knobs(3) -> selectedTrack.volume,
+          RelativeBinding(knobs(4), transport.tempo, sensitivity = 0.1),
+          knobs(7) -> masterTrack.volume
+        )
     }
+    trackMode
 
-    val loopsMode = new Mode("Loop Mixer") {
+    object loopsMode extends Mode("Loop Mixer") {
       override def dependents = List(loops(0).loops.currentSize)
       override def bindings =
         joystickBindings ++
           rightSix(ccPads, flip = false).zip(loops(0).loops.currentItems.dropRight(1)).map { (button, loop) =>
-            ButtonBinding(button, loop.clipBank.clips(0).toggle, loop.delete)
-          } // .map(_.clipBank.clips(0).toggle)
+            ButtonBinding(button, loop.clipBank.clips(0).toggle, onLongPress = loop.delete)
+          }
           ++ RelativeBinding.list(
             leftSix(knobs).zip(loops(0).loops.currentItems.dropRight(1).map(_.volume))
           ) ++ List(
@@ -239,6 +232,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
             knobs(7) -> masterTrack.volume
           )
     }
+    loopsMode
 
     val deviceMode: Mode = new Mode("Device Control") {
       val device = selectedTrack.deviceCursor
@@ -248,17 +242,55 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         device.remoteControls.visible.set(true)
       }
 
-      override def dependents = deviceModes.map(_.device.exists)
+      override def dependents = deviceModes.map(_.specificDevice.exists)
 
-      override def bindings = List(deviceModes.find(_.device.exists()).getOrElse(genericMode)) ++ List(
-        ccPads(0) -> trackMode.replaceAction,
+      val pickDeviceMode = new Mode("Pick Device") {
+        val selectActions =
+          browser.results.itemBank.items.map(_.selectAndCommit.andThen(deviceMode.replaceAction.apply))
+
+        val browserBindings: Mode.Bindings =
+          ButtonBinding.list(ccPads.take(7).zip(selectActions)) ++ List(
+            ccPads(7) -> browser.cancel.andThen(() => deviceMode.replaceAction())
+          )
+
+        val pickActions = selectedTrack.devices.devices.map(d =>
+          Action(
+            d.name,
+            () => { device.selectDevice(d); deviceMode.replaceAction() },
+            d.isSelected.map(if _ then 1.0 else 0.0)
+          )
+        )
+
+        def normalBindings = ccPads
+          .take(6)
+          .zip(selectedTrack.devices.currentItems)
+          .zip(pickActions)
+          .map { case ((pad, device), pick) =>
+            ButtonBinding(pad, pick, onLongPress = device.before.browseAction)
+          } ++ List(
+          ButtonBinding(ccPads(6), selectedTrack.start.browseAction, onLongPress = device.replace.browseAction),
+          ButtonBinding(ccPads(7), selectedTrack.end.browseAction, onLongPress = device.delete)
+        )
+
+        override def dependents = super.dependents ++ selectedTrack.devices.devices.map(_.exists) ++ List(
+          browser.isOpen,
+          browser.results.entryCount
+        )
+        override def bindings = if browser.isOpen() then browserBindings else normalBindings
+      }
+
+      override def bindings = List(deviceModes.find(_.specificDevice.exists()).getOrElse(genericMode)) ++ List(
+        ButtonBinding(ccPads(0), pickDeviceMode.replaceAction, onLongPress = trackMode.replaceAction),
         ButtonBinding(ccPads(4), loops(0).triggerAction, onLongPress = loopsMode.replaceAction),
         knobs(3) -> selectedTrack.volume,
         knobs(7) -> masterTrack.volume
       )
 
-      val genericMode = new Mode("Generic Device") {
-        override def dependents = device.remoteControls.pageCount +: device.remoteControls.controls.map(_.exists)
+      val genericMode = new Mode {
+        override def dependents =
+          List(device.remoteControls.pageCount, device.remoteControls.pageNames) ++ device.remoteControls.controls.map(
+            _.exists
+          )
         override def bindings =
           joystickBindings ++ leftSix(knobs)
             .zip(leftSix(device.remoteControls.controls))
@@ -267,18 +299,21 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
               else ButtonBinding(knob.asButton, control.startMapping)
             } ++ ButtonBinding.list(
             rightSix(ccPads).zip(
-              device.remoteControls.selectPageAction.take(device.remoteControls.pageCount()) ++ (0 until 8).map(_ =>
-                device.remoteControls.createPage
-              )
+              device.remoteControls.selectPageAction.take(device.remoteControls.pageCount()).zipWithIndex.flatMap {
+                (select, idx) =>
+                  if idx < device.remoteControls.pageNames().length && device.remoteControls.pageNames()(idx) == "xy"
+                  then List()
+                  else List(select)
+              }
             )
           )
       }
 
-      abstract class DeviceMode[T <: SpecificDevice](val device: T) extends Mode(device.device.name)
+      abstract class DeviceMode[T <: SpecificDevice](val specificDevice: T) extends Mode
 
       val deviceModes = List[DeviceMode[_]](
         new DeviceMode(Diva.Device(device)) {
-          import this.device._
+          import this.specificDevice._
 
           override val bindings =
             List(
@@ -334,7 +369,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
             )
         },
         new DeviceMode(Chromaphone.Device(device)) {
-          val layer = this.device.layer(0)
+          val layer = this.specificDevice.layer(0)
           import layer._
 
           override val bindings = List(
@@ -411,7 +446,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           )
         },
         new DeviceMode(DrumSynth.Device(device)) {
-          import this.device._
+          import this.specificDevice._
 
           override val bindings = List(
             new Mode.Paged(notePads.take(8)) {
@@ -530,9 +565,9 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         "pads" -> ujson.Arr(ccPads.take(8).map(_.toJson()): _*),
         "knobs" -> ujson.Arr(knobs.take(8).map(_.toJson()): _*),
         "mode" -> modeCtx.current.map(_.name()).getOrElse(""),
-        "browserResults" -> (if !browser.isOpen() then ujson.Null
-                             else browser.resultsColumn.toJson()),
-        "tracks" -> allTracks.toJson()
+        "browser" -> browser.toJson(),
+        "tracks" -> allTracks.toJson(),
+        "loops" -> ujson.Arr(mainModes.loops(0).loops.currentItems.dropRight(1).map(_.clipBank(0).toJson()): _*)
       )
       .toString
   catch

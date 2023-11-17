@@ -5,17 +5,17 @@ import com.bitwig.extension.controller.api.{Device => _, Track => _, Parameter =
 import com.bitwig.extension.controller.{api => bitwig};
 import java.util.UUID
 
-abstract class SpecificDeviceSpec[T] {
+abstract class SpecificDeviceSpec {
   def matcher(implicit ext: ControllerExtension): DeviceMatcher
   def insert(insertionPoint: InsertionPoint): Unit
 }
 
-abstract class SpecificDevice {
+trait SpecificDevice {
   val exists: BoolValue
   val device: com.garo.Device
 }
 
-class SpecificVST3Device[T](id: String, defaultParamID: Int) extends SpecificDeviceSpec[T] {
+class SpecificVST3Device(id: String, defaultParamID: Int) extends SpecificDeviceSpec {
   def matcher(implicit ext: ControllerExtension) = ext.host.createVST3DeviceMatcher(id)
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertVST3Device(id)
 
@@ -30,7 +30,7 @@ class SpecificVST3Device[T](id: String, defaultParamID: Int) extends SpecificDev
   }
 }
 
-class SpecificBitwigDevice[T](idString: String, defaultParamID: String) extends SpecificDeviceSpec[T] {
+class SpecificBitwigDevice(idString: String, defaultParamID: String) extends SpecificDeviceSpec {
   val id = UUID.fromString(idString)
   def matcher(implicit ext: ControllerExtension) = ext.host.createBitwigDeviceMatcher(id)
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertBitwigDevice(id)
@@ -277,5 +277,11 @@ object Chromaphone extends SpecificVST3Device("56535443424D566368726F6D6170686F"
       val resonator = List(0, 1).map(Resonator(_))
     }
     val layer = List(0, 1).map(Layer(_))
+  }
+}
+
+object Latch extends SpecificBitwigDevice("93c9d566-4cc9-4895-bf5b-475cab44eba9", "TRIGGER") {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+    val on = device.remoteControls.controls(0)
   }
 }

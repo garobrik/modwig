@@ -4,9 +4,11 @@
   "private": true,
   "dependencies": {
     "cra-template-typescript": "1.2.0",
+    "material-icons": "^1.13.12",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-scripts": "5.0.1"
+    "react-scripts": "5.0.1",
+    "ts-material-icon-name-list": "^0.0.1"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -19,6 +21,10 @@
       "react-app",
       "react-app/jest"
     ]
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true
   },
   "browserslist": {
     "production": [

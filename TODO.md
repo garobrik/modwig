@@ -1,11 +1,14 @@
-- better device chain control
 - don't start many loops at once
-- loop display
+- use Math.random as default react key?
+- delete tracks
+- browse by tags
+- better loop display
 - generic device controls paged
 - track/device metadata
 - what to do abt xtra pages
 - set up string studio knobs
 - move velocity curve into code?
 - animation
+- re-architect to have single mapping for pad bindings & then handle everything extension-side
 - browse UI show where browsing
 - ergonomics

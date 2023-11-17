@@ -8,6 +8,8 @@ import React, {
   useState,
 } from 'react';
 import { Property } from 'csstype';
+import 'material-icons/iconfont/filled.css';
+import type { MaterialIconName } from 'ts-material-icon-name-list';
 
 const ThemeContext = createContext({
   bg: '#3d3846' satisfies Property.Color,
@@ -23,32 +25,22 @@ const useTheme = () => useContext(ThemeContext);
 
 type ThemeType = ContextType<typeof ThemeContext>;
 
-const Theme = ({
-  children,
-  ...props
-}: React.PropsWithChildren<Partial<ThemeType>>) => (
-  <ThemeContext.Provider value={{ ...useTheme(), ...props }}>
-    {children}
-  </ThemeContext.Provider>
+const Theme = ({ children, ...props }: React.PropsWithChildren<Partial<ThemeType>>) => (
+  <ThemeContext.Provider value={{ ...useTheme(), ...props }}>{children}</ThemeContext.Provider>
 );
 
-const transformControlName = (name: string) =>
-  /[AB] \w+: (.+)/.exec(name)?.at(1) ?? name;
+const transformControlName = (name: string) => /[AB] \w+: (.+)/.exec(name)?.at(1) ?? name;
 
 type State = {
   pads: Button[];
   knobs: Control[];
   mode: string;
-  browserResults: BrowserResult[] | null;
+  browser: { isOpen: boolean } & Record<(typeof browserColumn)[number], BrowserResult[]>;
   tracks: Track[];
+  loops: Loop[];
 };
-type TrackType =
-  | 'Group'
-  | 'Instrument'
-  | 'Audio'
-  | 'Hybrid'
-  | 'Effect'
-  | 'Master';
+const browserColumn = ['results', 'tags', 'categories', 'deviceTypes', 'creators'] as const;
+type TrackType = 'Group' | 'Instrument' | 'Audio' | 'Hybrid' | 'Effect' | 'Master';
 type Track = {
   name: string;
   arm: boolean;
@@ -60,7 +52,8 @@ type Track = {
   devices: Device[];
 };
 type Device = {
-  name: string;
+  deviceName: string;
+  presetName: string;
   enabled: boolean;
   isSelected: boolean;
 };
@@ -73,27 +66,35 @@ type Control = {
   bindings: Binding[];
 };
 type Button = Control & {
+  type: 'Button';
   isPressed: boolean;
+};
+type Knob = Control & {
+  type: 'Knob';
 };
 type Binding = {
   name: string;
   value: number;
   displayedValue: string;
 };
+type Loop = {
+  name: string;
+  hasClip: boolean;
+  playing: boolean;
+  playingQueued: boolean;
+  recording: boolean;
+  recordingQueued: boolean;
+};
 
 const AppStateContext = createContext<State | null>(null);
 const useAppState = () => useContext(AppStateContext);
 
 const usePluginConnection = () => {
-  const [status, setStatus] = useState<
-    'CLOSED' | 'OPEN' | 'RECEIVING' | 'ERROR'
-  >('CLOSED');
+  const [status, setStatus] = useState<'CLOSED' | 'OPEN' | 'RECEIVING' | 'ERROR'>('CLOSED');
   const [state, setState] = useState<State | null>(null);
   useEffect(() => {
     const socket = new WebSocket(
-      `ws://${
-        isDev() ? `${window.location.hostname}:8080` : window.location.host
-      }/ws`
+      `ws://${isDev() ? `${window.location.hostname}:8080` : window.location.host}/ws`
     );
     socket.onopen = (ev) => {
       setStatus('OPEN');
@@ -130,10 +131,7 @@ export const App = () => {
     onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
       setTheme((theme) => ({
         ...theme,
-        [k]:
-          typeof theme[k] === 'number'
-            ? parseFloat(e.target.value)
-            : e.target.value,
+        [k]: typeof theme[k] === 'number' ? parseFloat(e.target.value) : e.target.value,
       })),
   });
 
@@ -151,9 +149,7 @@ export const App = () => {
         >
           {!useIsFullscreen() && (
             <div>
-              <button onClick={() => rootRef.current?.requestFullscreen()}>
-                ⛶
-              </button>
+              <button onClick={() => rootRef.current?.requestFullscreen()}>⛶</button>
               <UIConfig updateTheme={updateTheme} />
             </div>
           )}
@@ -166,7 +162,7 @@ export const App = () => {
             }}
           >
             <Tracks />
-            <Browser />
+            {/* <Browser /> */}
             <Bindings />
           </div>
         </div>
@@ -188,34 +184,10 @@ const UIConfig = ({ updateTheme }: UIConfigProps) => {
     <div>
       <input type="color" {...updateTheme('bg')} />
       <input type="color" {...updateTheme('fg')} />
-      <input
-        type="range"
-        min="0"
-        max="20"
-        step="0.5"
-        {...updateTheme('distance')}
-      />
-      <input
-        type="range"
-        min="0"
-        max="30"
-        step="0.5"
-        {...updateTheme('blur')}
-      />
-      <input
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        {...updateTheme('intensity')}
-      />
-      <input
-        type="range"
-        min="0.5"
-        max="3"
-        step="0.01"
-        {...updateTheme('space')}
-      />
+      <input type="range" min="0" max="1" step="0.01" {...updateTheme('distance')} />
+      <input type="range" min="0" max="2" step="0.02" {...updateTheme('blur')} />
+      <input type="range" min="0" max="1" step="0.01" {...updateTheme('intensity')} />
+      <input type="range" min="0.5" max="3" step="0.01" {...updateTheme('space')} />
     </div>
   );
 };
@@ -236,9 +208,7 @@ const Tracks = () => {
         .filter(
           (track) =>
             ['Effect', 'Master'].every((type) => type !== track.type) &&
-            ['Loop', 'Layer', 'Metronome'].every(
-              (name) => !track.name.startsWith(name)
-            )
+            ['Loop', 'Layer', 'Metronome'].every((name) => !track.name.startsWith(name))
         )
         .map((track) => (
           <Box
@@ -262,12 +232,29 @@ const Tracks = () => {
                 }}
                 space="sm"
               >
-                <Text size="md">{device.name}</Text>
+                <Text size="md">
+                  {device.presetName === 'init' ? device.deviceName : device.presetName}
+                </Text>
               </Box>
             ))}
           </Box>
         ))}
     </Box>
+  );
+};
+
+const Loops = () => {
+  const theme = useTheme();
+  const loops = useAppState()?.loops;
+  if (loops === undefined || loops.length === 0) return null;
+  return (
+    <div style={{ flex: 1, justifyContent: 'space-around' }}>
+      <Box neuShadow={false} style={{ flex: 1, flexDirection: 'column' }}>
+        {loops.map((loop) => (
+          <Box></Box>
+        ))}
+      </Box>
+    </div>
   );
 };
 
@@ -298,18 +285,14 @@ const Bindings = () => {
             gap: `${theme.space}vw`,
           }}
         >
-          {state.pads.map(
-            ({ isPressed, bindings: [binding, ...otherBindings] }) => (
-              <Pad
-                isPressed={isPressed || binding?.value === 1}
-                isHalfPressed={binding?.value === 0.5}
-                text={binding?.name}
-                topRightText={
-                  otherBindings.length > 0 ? otherBindings[0].name : undefined
-                }
-              />
-            )
-          )}
+          {state.pads.map(({ isPressed, bindings: [binding, ...otherBindings] }) => (
+            <Pad
+              isPressed={isPressed || binding?.value === 1}
+              isHalfPressed={binding?.value === 0.5}
+              text={binding?.name}
+              topRightText={otherBindings.length > 0 ? otherBindings[0].name : undefined}
+            />
+          ))}
         </div>
         <div
           style={{
@@ -320,9 +303,7 @@ const Bindings = () => {
           }}
         >
           {state.knobs.map(({ bindings }) => {
-            const binding = bindings.find(
-              (binding) => binding?.name.length > 0
-            );
+            const binding = bindings.find((binding) => binding?.name.length > 0);
             return (
               <Knob
                 name={binding?.name ?? ''}
@@ -405,11 +386,7 @@ const Knob = ({ name, value, percentage }: KnobProps) => {
         }}
         space="none"
       >
-        <svg
-          style={{ position: 'absolute', inset: '2%', filter: '' }}
-          height="100%"
-          width="100%"
-        >
+        <svg style={{ position: 'absolute', inset: '2%', filter: '' }} height="100%" width="100%">
           <circle stroke={theme.bg} fill="transparent" strokeWidth="8%" />
         </svg>
         <div
@@ -484,21 +461,24 @@ const Knob = ({ name, value, percentage }: KnobProps) => {
 };
 
 const Browser = () => {
-  const state = useAppState();
-  if (!state?.browserResults) return null;
+  const browser = useAppState()?.browser;
+  if (!browser?.isOpen) return null;
 
   return (
     <Box
       style={{
         maxHeight: '40vh',
         flex: 1,
-        overflowY: 'scroll',
-        flexDirection: 'column',
+        overflowX: 'scroll',
       }}
       space="sm"
     >
-      {state?.browserResults.map((result) => (
-        <BrowserResultElement result={result} />
+      {browserColumn.map((column) => (
+        <Box style={{ overflowY: 'scroll', flex: 1, flexDirection: 'column' }} space="sm">
+          {browser[column].map((result) => (
+            <BrowserResultElement result={result} />
+          ))}
+        </Box>
       ))}
     </Box>
   );
@@ -524,7 +504,7 @@ const BrowserResultElement = ({ result }: { result: BrowserResult }) => {
         inset: result.isSelected,
       }}
     >
-      <Text size="md" style={{ fontWeight: 600 }}>
+      <Text size="sm" style={{ fontWeight: 600 }}>
         {result.name}
       </Text>
     </Box>
@@ -566,23 +546,15 @@ type TextProps = React.JSX.IntrinsicElements['span'] & {
   weight?: 'light' | 'medium' | 'bold';
   scale?: number;
 };
-const Text = ({
-  style,
-  size = 'lg',
-  weight = 'bold',
-  scale,
-  ...props
-}: TextProps) => {
+const Text = ({ style, size = 'lg', weight = 'bold', scale, ...props }: TextProps) => {
   const { fg } = useTheme();
   const fontScaleFactor =
     scale && typeof props.children === 'string' && props.children.length > scale
       ? Math.pow(scale / props.children.length, 0.3)
       : 1;
   const fontSize =
-    fontScaleFactor *
-    (size === 'xs' ? 1.0 : size === 'sm' ? 1.5 : size === 'md' ? 2 : 2.5);
-  const fontWeight =
-    weight === 'light' ? 400 : weight === 'medium' ? 700 : 1000;
+    fontScaleFactor * (size === 'xs' ? 1.0 : size === 'sm' ? 1.5 : size === 'md' ? 2 : 2.5);
+  const fontWeight = weight === 'light' ? 400 : weight === 'medium' ? 700 : 1000;
   return (
     <span
       style={{
@@ -597,6 +569,8 @@ const Text = ({
   );
 };
 
+const Icon = ({ i }: { i: MaterialIconName }) => <span className="material-icons">{i}</span>;
+
 type NeuShadowProps =
   | {
       color: string;
@@ -609,9 +583,7 @@ type NeuShadowProps =
 
 const useNeuBoxShadow = (props?: Partial<NeuShadowProps>) => {
   const theme = useTheme();
-  return neuBoxShadow(
-    props === false ? false : { color: theme.bg, ...theme, ...props }
-  );
+  return neuBoxShadow(props === false ? false : { color: theme.bg, ...theme, ...props });
 };
 
 const neuBoxShadow = (props: NeuShadowProps): React.CSSProperties => {
@@ -620,14 +592,8 @@ const neuBoxShadow = (props: NeuShadowProps): React.CSSProperties => {
   const insetStr = inset ? 'inset' : '';
   return {
     boxShadow: `
-      ${insetStr} ${distance}vw ${distance}vw ${blur}vw ${luminance(
-      color,
-      -intensity
-    )}, 
-      ${insetStr} ${-distance}vw ${-distance}vw ${blur}vw ${luminance(
-      color,
-      intensity
-    )}
+      ${insetStr} ${distance}vw ${distance}vw ${blur}vw ${luminance(color, -intensity)}, 
+      ${insetStr} ${-distance}vw ${-distance}vw ${blur}vw ${luminance(color, intensity)}
     `,
   };
 };
@@ -641,14 +607,10 @@ const neuBoxShadow = (props: NeuShadowProps): React.CSSProperties => {
 // }: NeuShadowProps) => {};
 
 const luminance = (color: string, intensity: number) => {
-  const match = color.match(
-    /^#([0-9a-f][0-9a-f])([0-9a-f][0-9a-f])([0-9a-f][0-9a-f])$/
-  )!;
+  const match = color.match(/^#([0-9a-f][0-9a-f])([0-9a-f][0-9a-f])([0-9a-f][0-9a-f])$/)!;
 
   const colors = [match[1], match[2], match[3]].map((colorStr) => {
-    const color = Math.round(
-      Math.min(Math.max(parseInt(colorStr, 16) * (1 + intensity), 0), 255)
-    );
+    const color = Math.round(Math.min(Math.max(parseInt(colorStr, 16) * (1 + intensity), 0), 255));
     return color.toString(16).padStart(2, '0');
   });
 
@@ -661,9 +623,7 @@ const useWindowDimensions = () => {
     height: window.innerHeight,
   });
 
-  const [windowDimensions, setWindowDimensions] = useState(
-    getWindowDimensions()
-  );
+  const [windowDimensions, setWindowDimensions] = useState(getWindowDimensions());
 
   useEffect(() => {
     const handleResize = () => setWindowDimensions(getWindowDimensions());
@@ -685,5 +645,4 @@ const useIsFullscreen = () => {
   return isFullscreen;
 };
 
-const isDev = () =>
-  !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+const isDev = () => !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
