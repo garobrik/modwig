@@ -516,11 +516,6 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
                 loopCursor.selectChannel(currentNextLoop)
               }
               currentNextClip.record()
-              currentNextClip.isPlaying.doAfterChanged(isPlaying =>
-                if (isPlaying) {
-                  currentNextLoop.arm.set(false)
-                }
-              )
               currentNextLoop.duplicate()
               nextNextLoop.name.set(
                 currentNextLoop.name().split(" ").last.toIntOption match {

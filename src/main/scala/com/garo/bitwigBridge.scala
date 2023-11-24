@@ -39,10 +39,10 @@ abstract class ControllerExtension(implicit val host: ControllerHost) {
   selectedTrack.clipCursor
   selectedTrack.deviceCursor
   selectedTrack.devices
-  val allTracks = TrackBank(host.createTrackBank(16, numSends, numScenes))
+  val allTracks = TrackBank(host.createTrackBank(32, numSends, numScenes))
   allTracks.tracks.map(_.devices.devices.map(_.isSelected))
-  val mainTrackBank = TrackBank(host.createMainTrackBank(16, numSends, numScenes))
-  val fxTrackBank = TrackBank(host.createEffectTrackBank(16, numScenes))
+  val mainTrackBank = TrackBank(host.createMainTrackBank(32, numSends, numScenes))
+  val fxTrackBank = TrackBank(host.createEffectTrackBank(32, numScenes))
   val masterTrack = new Track(host.createMasterTrack(numScenes))
 
   val blockSize = preferences.getNumberSetting("Max Block Size", "Audio", 1, 50, 1, "ms", 24)
@@ -1122,8 +1122,8 @@ class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: Controlle
 }
 
 class Channel(val channel: bitwig.Channel)(implicit ext: ControllerExtension) extends DeviceChain(channel) {
-  val volume = Parameter(channel.volume, name = name.map(_ + " Volume"))
-  val pan = Parameter(channel.pan, name = name.map(_ + "Pan"))
+  val volume = Parameter(channel.volume, name = name.map(_ + " volume"))
+  val pan = Parameter(channel.pan, name = name.map(_ + " pan"))
   val mute = SettableBoolValue(channel.mute)
   val solo = SettableBoolValue(channel.solo)
   val active = SettableBoolValue(channel.isActivated)

@@ -212,7 +212,7 @@ const Tracks = () => {
         )
         .map((track) => (
           <Box
-            key={track.name}
+            key={Math.random()}
             style={{
               flex: 1,
               flexDirection: 'column',

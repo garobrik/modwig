@@ -1,14 +1,15 @@
 - don't start many loops at once
-- use Math.random as default react key?
+- what to do abt xtra pages
 - delete tracks
+- record things & mark sections of interest
+- make kitchen sink audio fx tool
+- configure drums w pads
 - browse by tags
 - better loop display
 - generic device controls paged
 - track/device metadata
-- what to do abt xtra pages
-- set up string studio knobs
-- move velocity curve into code?
+- find a way to assign unique IDs to track/device instances
 - animation
+- move velocity curve into code?
 - re-architect to have single mapping for pad bindings & then handle everything extension-side
 - browse UI show where browsing
-- ergonomics
