@@ -1490,9 +1490,12 @@ abstract class Enumeration extends scala.Enumeration {
   }
 }
 
-case class Transport(transport: bitwig.Transport)(implicit ext: ControllerExtension) {
+class Transport(transport: bitwig.Transport)(implicit ext: ControllerExtension) {
   val isPlaying = SettableBoolValue(transport.isPlaying())
-  val playPosition = new BeatTimeValue(transport.playPosition())
+  val playPosition = BeatTimeValue(transport.playPosition())
+  val record = SettableBoolValue(transport.isArrangerRecordEnabled(), "record")
+  // TODO: properly enable values from multi-bindings and remove this hack
+  val addCue = Action("add cue", transport.addCueMarkerAtPlaybackPositionAction(), value = record.toggle.rawValue)
   val tempo = Parameter(transport.tempo)
 
   val defaultLaunchQ = Transport.LaunchQ.SettableEnumValue(transport.defaultLaunchQuantization())
@@ -1500,10 +1503,13 @@ case class Transport(transport: bitwig.Transport)(implicit ext: ControllerExtens
   val postRecordAction = Transport.PostRecordAction.SettableEnumValue(transport.clipLauncherPostRecordingAction())
   val postRecordTime = SettableBeatTimeValue(transport.getClipLauncherPostRecordingTimeOffset(), "Loop Length")
 
-  val playAction = Action(isPlaying.map(if _ then "Pause" else "Play"), transport.playAction())
-  val stopAction = Action("Stop", transport.stopAction())
-  val recordAction = Action("Record", transport.recordAction())
-  val tapTempo = Action("Tap Tempo", transport.tapTempoAction())
+  val play = Action(isPlaying.map(if _ then "pause" else "play"), transport.playAction())
+  val playAndRecordOrStop = Action(
+    isPlaying.map(if _ then "stop" else "w record"),
+    () => if isPlaying() then stop() else { record.toggle(); play() }
+  )
+  val stop = Action("stop", transport.stopAction())
+  val tapTempo = Action("tap tempo", transport.tapTempoAction())
 
   val beatsPerBar = SettableIntValue(transport.timeSignature.numerator)
 

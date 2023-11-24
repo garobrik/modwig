@@ -1,7 +1,6 @@
 - don't start many loops at once
 - what to do abt xtra pages
 - delete tracks
-- record things & mark sections of interest
 - make kitchen sink audio fx tool
 - configure drums w pads
 - browse by tags

@@ -200,6 +200,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           ButtonBinding(ccPads(0), pickTrackMode.replaceAction, onLongPress = deviceMode.replaceAction),
           ccPads(1) -> application.undo,
           ccPads(2) -> application.redo,
+          ButtonBinding(ccPads(3), transport.addCue, onLongPress = transport.record.toggle),
           ButtonBinding(
             ccPads(4),
             loops(0).triggerAction,
@@ -207,7 +208,7 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
           ),
           ccPads(5) -> selectedTrack.arm.toggle,
           ButtonBinding(ccPads(6), transport.tapTempo, onLongPress = metronome.toggle),
-          ccPads(7) -> transport.playAction,
+          ButtonBinding(ccPads(7), transport.play, onLongPress = transport.playAndRecordOrStop),
           knobs(2) -> selectedTrack.pan,
           knobs(3) -> selectedTrack.volume,
           RelativeBinding(knobs(4), transport.tempo, sensitivity = 0.1),
