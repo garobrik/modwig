@@ -1,7 +1,11 @@
+- create loops within track instead of in separate looper, create loop mixer from tracks that have clips
+- other desert cities knobs
+- display overview knobs for whole track device chain
+- VU meters
 - don't start many loops at once
-- what to do abt xtra pages
 - delete tracks
 - make kitchen sink audio fx tool
+- show modulated param values
 - configure drums w pads
 - browse by tags
 - better loop display
@@ -12,3 +16,11 @@
 - move velocity curve into code?
 - re-architect to have single mapping for pad bindings & then handle everything extension-side
 - browse UI show where browsing
+
+- modulation sources:
+  - xy/mod signal
+  - env
+  - lfo
+  - keytrack/velo/expressions
+  - voice stack
+  - audio sidechain

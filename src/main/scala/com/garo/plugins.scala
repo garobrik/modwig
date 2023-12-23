@@ -1,12 +1,18 @@
 package com.garo
 
 import com.garo._;
-import com.bitwig.extension.controller.api.{Device => _, Track => _, Parameter => _, InsertionPoint => _, _};
+import com.bitwig.extension.controller.api.{
+  Device => _,
+  Track => _,
+  Parameter => _,
+  InsertionPoint => _,
+  Action => _,
+  _
+};
 import com.bitwig.extension.controller.{api => bitwig};
 import java.util.UUID
 
 abstract class SpecificDeviceSpec {
-  def matcher(implicit ext: ControllerExtension): DeviceMatcher
   def insert(insertionPoint: InsertionPoint): Unit
 }
 
@@ -16,7 +22,6 @@ trait SpecificDevice {
 }
 
 class SpecificVST3Device(id: String, defaultParamID: Int) extends SpecificDeviceSpec {
-  def matcher(implicit ext: ControllerExtension) = ext.host.createVST3DeviceMatcher(id)
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertVST3Device(id)
 
   abstract class BaseDevice(val device: com.garo.Device)(using ControllerExtension) extends SpecificDevice {
@@ -32,7 +37,6 @@ class SpecificVST3Device(id: String, defaultParamID: Int) extends SpecificDevice
 
 class SpecificBitwigDevice(idString: String, defaultParamID: String) extends SpecificDeviceSpec {
   val id = UUID.fromString(idString)
-  def matcher(implicit ext: ControllerExtension) = ext.host.createBitwigDeviceMatcher(id)
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertBitwigDevice(id)
 
   abstract class BaseDevice(val device: com.garo.Device)(using ControllerExtension) extends SpecificDevice {
@@ -104,7 +108,7 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
     object vco3 extends VCO(88) { val sync = param(121, "Sync") }
     val vcos = List(vco1, vco2, vco3)
 
-    val voiceCount = param(4)
+    val voiceCount = param(46)
     val voiceStack = param(5)
     val polyMode = param(6)
 
@@ -283,5 +287,108 @@ object Chromaphone extends SpecificVST3Device("56535443424D566368726F6D6170686F"
 object Latch extends SpecificBitwigDevice("93c9d566-4cc9-4895-bf5b-475cab44eba9", "TRIGGER") {
   class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val on = device.remoteControls.controls(0)
+  }
+}
+
+object OtherDesertCities extends SpecificVST3Device("ABCDEF019182FAEB417544614F444331", 48) {
+  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+    val time1 = param(48)
+    val time2 = param(49)
+    val regen = param(50)
+    val mix = param(51)
+    val sync1 = param(52)
+    val sync2 = param(53)
+    val loop = param(54)
+    val ducking = device.remoteControls.controls(0)
+
+    object algorithm {
+      val p = param(55)
+      val setActions = List(
+        ("Stereo", 0.0),
+        ("Reverse", 0.2),
+        ("Tape", 0.4),
+        ("Multi Tap", 0.6),
+        ("Multi Head", 0.8),
+        ("Granular", 1.0)
+      ).map { (name, value) =>
+        Action(name, () => p.set(value))
+      }
+    }
+
+    object algo1 {
+      val locut = param(1565)
+      val hicut = param(1566)
+      val saturation = param(1567)
+      val spread = param(1568)
+      val crossfeed = param(1569)
+    }
+    algo1
+    object algo2 {
+      val locut = param(1570)
+      val hicut = param(1571)
+      val smoothing = param(1572)
+      val crossfeed = param(1573)
+      val reflect = param(1574)
+    }
+    algo2
+    object algo3 {
+      val speed1 = param(1575)
+      val speed2 = param(1576)
+      val color = param(1598)
+      val random = param(1599)
+      val smoothing = param(1600)
+      val crossfeed = param(1601)
+      val respeed = param(1602)
+      val quantize = param(1603)
+    }
+    algo3
+    object algo4 {
+      val numTaps1 = param(1604)
+      val numTaps2 = param(1605)
+      val locut = param(1606)
+      val hicut = param(1607)
+      val spread = param(1629)
+      val crossfeed = param(1630)
+    }
+    algo4
+    object algo5 {
+      val speed = param(1726)
+      val window = param(1727)
+      val heads = param(1728)
+      val color = param(1729)
+      val repitch = param(1730)
+      val quantize = param(1731)
+    }
+    algo5
+    object algo6 {
+      val pitch = param(1753)
+      val pitchRandom = param(1754)
+      val size = param(1755)
+      val scatter = param(1756)
+      val locut = param(1757)
+      val hicut = param(1758)
+      val regrain = param(1759)
+      val quantize = param(1760)
+    }
+    algo6
+    object diffuser {
+      val size = param(1818)
+      val diffusion = param(1819)
+      val modRate = param(1820)
+      val modDepth = param(1821)
+      val mix = param(1822)
+      val locut = param(1823)
+    }
+    diffuser
+
+    val inputLevel = param(1824)
+    val inputBalance = param(1825)
+    val delay1pan = param(48626)
+    val delay2pan = param(48627)
+    val width = param(48628)
+    val regenBalance = param(48629)
+    val wetBalance = param(48630)
+    val output = param(48631)
+    val mute = param(48632)
   }
 }

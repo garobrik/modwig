@@ -17,6 +17,7 @@ import scala.annotation.targetName
 trait Serializable {
   def toJson(): ujson.Value
 }
+given Conversion[Serializable, ujson.Value] = _.toJson()
 
 abstract class ControllerExtension(implicit val host: ControllerHost) {
   implicit val extension: ControllerExtension = this
@@ -1020,6 +1021,7 @@ case class SettableBeatTimeValue(value: bitwig.SettableBeatTimeValue, name: Stri
 class Parameter(param: bitwig.Parameter, name: Option[Gettable[String]] = None)(using ControllerExtension)
     extends Value[Double](param),
       HardwareBindable(param),
+      SettableValue[Double],
       RelativeHardwareControlBindable[bitwig.Parameter],
       AbsoluteHardwareControlBindable[bitwig.Parameter] {
 
@@ -1031,10 +1033,12 @@ class Parameter(param: bitwig.Parameter, name: Option[Gettable[String]] = None)(
       }
     )
   override def get() = param.get
+  override def set(newValue: Double): Unit = param.set(newValue)
 
   override val bindableName = name.getOrElse(StringValue(param.name()))
   override val rawValue = this
   override val displayedValue = StringValue(param.displayedValue())
+  val modulatedValue = param.modulatedValue()
 
   val exists = BoolValue(param.exists())
 
@@ -1115,13 +1119,13 @@ class DeviceChain[T <: bitwig.DeviceChain](val chain: T)(implicit ext: Controlle
 
   val instrumentDevice = firstDeviceMatching(ext.Matchers.instrument)
   val fxDevice = firstDeviceMatching(ext.Matchers.effect)
-  val primaryDevice = firstDeviceMatching(ext.Matchers.or(ext.Matchers.instrumentOrEffect, InstrumentSelector.matcher))
+  val primaryDevice = firstDeviceMatching(ext.Matchers.instrumentOrEffect)
 
   val start = InsertionPoint(chain.startOfDeviceChainInsertionPoint(), "At Start")
   val end = InsertionPoint(chain.endOfDeviceChainInsertionPoint(), "At End")
 }
 
-class Channel(val channel: bitwig.Channel)(implicit ext: ControllerExtension) extends DeviceChain(channel) {
+class Channel(val channel: bitwig.Channel)(using ControllerExtension) extends DeviceChain(channel) {
   val volume = Parameter(channel.volume, name = name.map(_ + " volume"))
   val pan = Parameter(channel.pan, name = name.map(_ + " pan"))
   val mute = SettableBoolValue(channel.mute)
@@ -1131,33 +1135,41 @@ class Channel(val channel: bitwig.Channel)(implicit ext: ControllerExtension) ex
   def select() = channel.selectInMixer()
   val selectAction = Action(name, () => select())
 
-  val vuMeterRMS = ValueFromLastObserved[Int](
-    0,
-    callback =>
-      channel.addVuMeterObserver(
-        100,
-        -1,
-        false,
-        new IntegerValueChangedCallback {
-          override def valueChanged(newValue: Int) = callback(newValue)
-        }
+  object vuMeter extends Serializable {
+    class VuMeterChannels(rms: Boolean) extends Serializable {
+      private def vuMeter(chan: Int, rms: Boolean) = ValueFromLastObserved(
+        0,
+        callback =>
+          channel.addVuMeterObserver(
+            100,
+            -1,
+            true,
+            new IntegerValueChangedCallback { override def valueChanged(newValue: Int): Unit = callback(newValue) }
+          )
       )
-  )
 
-  val vuMeterPeak = ValueFromLastObserved[Int](
-    0,
-    callback =>
-      channel.addVuMeterObserver(
-        100,
-        -1,
-        true,
-        new IntegerValueChangedCallback {
-          override def valueChanged(newValue: Int) = callback(newValue)
-        }
+      val left = vuMeter(0, rms)
+      val right = vuMeter(1, rms)
+      val sum = vuMeter(-1, rms)
+
+      override def toJson() = ujson.Obj(
+        "left" -> left(),
+        "right" -> right(),
+        "sum" -> sum()
       )
-  )
+    }
+
+    val rms = VuMeterChannels(false)
+    val peak = VuMeterChannels(true)
+    override def toJson() = ujson.Obj(
+      "rms" -> rms,
+      "peak" -> peak
+    )
+  }
+  vuMeter
 
   val delete = Action("Delete", channel.deleteObjectAction())
+
 }
 
 class Track[T <: bitwig.Track](val track: T)(implicit ext: ControllerExtension) extends Channel(track), Serializable {
@@ -1190,7 +1202,8 @@ class Track[T <: bitwig.Track](val track: T)(implicit ext: ControllerExtension) 
     "mute" -> mute(),
     "type" -> trackType(),
     "isSelected" -> isSelected(),
-    "devices" -> devices.toJson()
+    "devices" -> devices,
+    "vuMeter" -> vuMeter
   )
 }
 
@@ -1205,13 +1218,13 @@ case class ClipBank(bank: ClipLauncherSlotBank, track: bitwig.Track)(implicit ex
 class ClipSlot(clipSlot: bitwig.ClipLauncherSlot, bank: bitwig.ClipLauncherSlotBank, track: bitwig.Track)(using
     ControllerExtension
 ) extends Serializable {
-  val hasClip = new BoolValue(clipSlot.hasContent())
-  val isPlaying = new BoolValue(clipSlot.isPlaying())
-  val isPlayingQueued = new BoolValue(clipSlot.isPlaybackQueued())
-  val isRecording = new BoolValue(clipSlot.isRecording())
-  val isRecordingQueued = new BoolValue(clipSlot.isRecordingQueued())
-  val exists = new BoolValue(clipSlot.exists())
-  def launch() = clipSlot.launch()
+  val hasClip = BoolValue(clipSlot.hasContent())
+  val isPlaying = BoolValue(clipSlot.isPlaying())
+  val isPlayingQueued = BoolValue(clipSlot.isPlaybackQueued())
+  val isRecording = BoolValue(clipSlot.isRecording())
+  val isRecordingQueued = BoolValue(clipSlot.isRecordingQueued())
+  val exists = BoolValue(clipSlot.exists())
+  val launch = Action(hasClip.map(if _ then "launch" else "loop"), clipSlot.launchAction())
   def launchWith(quantization: Option[Transport.LaunchQ.Value], mode: Option[Transport.LaunchMode.Value]) =
     clipSlot.launchWithOptions(
       quantization.map(_.toString()).getOrElse("default"),
@@ -1312,9 +1325,9 @@ case class ClipCursor(clipCursor: PinnableCursorClip)(implicit ext: ControllerEx
   def selectFirst() = clipCursor.selectFirst()
 }
 
-class Bank[T <: Serializable, BT <: bitwig.ObjectProxy](bank: bitwig.Bank[BT], itemCtor: BT => T)(implicit
-    ext: ControllerExtension
-) {
+class Bank[T <: Serializable, BT <: bitwig.ObjectProxy](bank: bitwig.Bank[BT], itemCtor: BT => T)(using
+    ControllerExtension
+) extends Serializable {
   val currentSize = new IntValue(bank.itemCount())
   def currentItems = items.slice(0, currentSize())
   def maxSize = bank.getSizeOfBank()
@@ -1323,12 +1336,11 @@ class Bank[T <: Serializable, BT <: bitwig.ObjectProxy](bank: bitwig.Bank[BT], i
 
   def apply(idx: Int) = items(idx)
 
-  def toJson() = ujson.Arr((0 until currentSize()).map(apply).map(_.toJson()): _*)
+  def toJson() = ujson.Arr((0 until currentSize()).map(apply(_).toJson()): _*)
 }
 
-case class DeviceBank(bank: bitwig.DeviceBank, matcher: Option[bitwig.DeviceMatcher] = None)(implicit
-    ext: ControllerExtension
-) extends Bank(bank, device => Device(device)) {
+case class DeviceBank(bank: bitwig.DeviceBank, matcher: Option[bitwig.DeviceMatcher] = None)(using ControllerExtension)
+    extends Bank(bank, device => Device(device)) {
   def devices = items
   matcher.foreach(bank.setDeviceMatcher(_))
 }

@@ -46,10 +46,6 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
 
   val noteInput = MPKin.createNoteInput("Keys", "80????", "90????")
   val padInput = MPKin.createNoteInput("Pads", "81????", "91????", "A1????")
-  MPKin.setMidiCallback(new ShortMidiDataReceivedCallback {
-    override def midiReceived(statusByte: Int, data1: Int, data2: Int) =
-      host.println(s"${statusByte}:${data1}:${data2}")
-  })
 
   def leftSix[T](l: List[T]) = l.slice(0, 3) ++ l.slice(4, 7)
   def rightSix[T](l: List[T], flip: Boolean = true) =
@@ -100,6 +96,15 @@ case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExte
         ActionMatcher(ActionMatcher.NoteOn, idx, channel = Some(1)),
         Some(ActionMatcher(ActionMatcher.NoteOff, idx, channel = Some(1))),
         indexInGroup = Some(idx % 8)
+      )
+    }
+
+  val keys =
+    List.range(0, 128).map { note =>
+      HardwareButton(
+        s"Key${note + 1}",
+        ActionMatcher(ActionMatcher.NoteOn, note, channel = Some(0)),
+        Some(ActionMatcher(ActionMatcher.NoteOff, note, channel = Some(0)))
       )
     }
 
