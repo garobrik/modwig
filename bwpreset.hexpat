@@ -41,15 +41,30 @@ enum ValueType : u8 {
   Str = 0x08,
   BObj = 0x09,
   Un0A = 0x0A,
+  Un0B = 0x0B,
   Un0D = 0x0D,
   U32Arr = 0x0F,
   BObjList = 0x12,
   UUID = 0x15,
   Un16 = 0x16,
+  FloatArr = 0x17,
   StrArr = 0x19,
 };
 fn formatValueType(ValueType type) {
   return std::string::substr(std::string::to_string(type), 11, 30);
+};
+
+struct String {
+  bool utf = std::mem::read_unsigned($, 1) == 0x80;
+  u32 sz;
+  if (utf) {
+        char16 value[sz & 0x0FFFFFFF];
+      } else {
+        char value[sz];
+        }
+}[[format("formatString")]];
+fn formatString(String string) {
+  return std::format("\"{}\"", std::string::to_string(string.value));
 };
 
 
@@ -60,25 +75,30 @@ struct Value {
   match (type) {
     (ValueType::U8): u8 value;
     (ValueType::Un02): u16 value;
-    (ValueType::Str): std::string::SizedString<u32> value [[color("004400")]];
+    (ValueType::Str): String value [[color("004400")]];
     (ValueType::Int): u32 value;
     (ValueType::Double): double value;
     (ValueType::UUID): type::Hex<u128> value;
     (ValueType::StrArr): {
       u32 sz;
-      std::string::SizedString<u32> value[sz];
+        String value[sz];
     }
     (ValueType::Bool): bool value;
     (ValueType::BObj): BObj value [[inline]];
     (ValueType::Un0A): {
       str value = "";
     }
+    (ValueType::Un0B): u32;
     (ValueType::Un0D): std::string::SizedString<u32> value;
     (ValueType::U32Arr): {
       u32 sz;
       u32 values[sz];
     }
     (ValueType::Un16): u128 value;
+    (ValueType::FloatArr): {
+      u32 sz;
+      float value[sz];
+    }
     (ValueType::BObjList): {
       if (std::mem::read_unsigned($, 4, std::mem::Endian::Big) == 0x1) {
         u64 value;
@@ -158,6 +178,27 @@ enum BFieldName: u32 {
   Value = 0x136,
   Device = 0x1421,
   
+  // RCPages
+  RCPagesPages = 0x1A7E,
+  
+  // RCPage
+  RCPageName = 0x1B69,
+  RCPageTags = 0x1B79,
+  RCPageRCs = 0x1A7A,
+  
+  // RemoteControl
+  RCName = 0x1A7B,
+  RCTarget = 0x1A7C,
+  RCIndex = 0x1A88,
+  RCMeta = 0x1A7D,
+  
+  // ModSource
+  ModSourceTargets = 0x0E20,
+  
+  // ModTarget
+  ModTargetTarget = 0x0E3D,
+  ModTargetMeta = 0x1334,
+  ModTargetAmt = 0x0E32,
   
   UUID = 0x18C6,
 };
@@ -167,8 +208,16 @@ fn formatFieldName(BFieldName type) {
 
 
 fn formatField(BField field) {
-  return std::format("{}: {} = {}", formatFieldName(field.name), formatValueType(field.value.type), field.value.value);
+  str typePart = "";
+  str valuePart = "";
+  if (field.value.type > 0x08) {
+    typePart = std::format(": {}", formatValueType(field.value.type));
+  } else {
+    valuePart = std::format(" = {}", field.value.value);
+  }
+  return std::format("{}{}{}", formatFieldName(field.name), typePart, valuePart);
 };
+
 struct BField {
   BFieldName name [[color("FF0000"), hidden]];
   Value value [[inline]];
@@ -180,7 +229,7 @@ enum BObjType : u32 {
   ModParam = 0x06DB,
   Label = 0x06D9,
   Value = 0x85,
-  Source = 0x2FC,
+  ModSource = 0x2FC,
   Preset = 0x561,
   Device = 0x40,
   DeviceChain = 0x24E,
@@ -190,6 +239,9 @@ enum BObjType : u32 {
   U8Param = 0x189,
   GridPolyParams = 0xD94,
   GridModules = 0x771,
+  RCPage = 0x077B,
+  RemoteControl = 0x077C,
+  ModTarget = 0x02FD,
 };
 fn formatObjType(BObjType type) {
   return std::string::substr(std::string::to_string(type), 10, 30);
