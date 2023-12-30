@@ -136,7 +136,7 @@ struct Obj {
 struct prefix {
   type::Magic<"BtWg">;
   u32;
-  u32;
+  Decimal::U32 format;
   u32;
   u32;
   Decimal::U32 preset_start;
@@ -145,7 +145,6 @@ struct prefix {
   u32;
   Decimal::U32 vst_start;
   u16;
-  Obj meta;
 };
 
 enum BFieldName: u32 {
@@ -211,7 +210,11 @@ fn formatField(BField field) {
   str typePart = "";
   str valuePart = "";
   if (field.value.type > 0x08) {
-    typePart = std::format(": {}", formatValueType(field.value.type));
+    if (field.value.type == ValueType::BObj) {
+      typePart = std::format(": {}", formatObjType(field.value.value.type));
+    } else {
+      typePart = std::format(": {}", formatValueType(field.value.type));
+    }
   } else {
     valuePart = std::format(" = {}", field.value.value);
   }
@@ -231,7 +234,8 @@ enum BObjType : u32 {
   Value = 0x85,
   ModSource = 0x2FC,
   Preset = 0x561,
-  Device = 0x40,
+  BitwigDevice = 0x40,
+  VSTDevice = 0x0728,
   DeviceChain = 0x24E,
   DoubleParam = 0x85,
   IntParam = 0xF7,
@@ -270,7 +274,10 @@ struct vst {
 
 struct bwpreset {
   prefix prefix;
-  preset preset @ prefix.preset_start.value;
+  if (prefix.format.value == 0x02) {
+    Obj meta;
+    preset preset @ prefix.preset_start.value;
+  }
   if (prefix.vst_start.value != 0) {
     vst vst @ prefix.vst_start.value;
   }
