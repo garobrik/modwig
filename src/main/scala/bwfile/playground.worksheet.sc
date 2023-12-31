@@ -1,5 +1,5 @@
-import com.garo.bwfile._
-import com.garo.bwfile.objFormat._
+import bwfile._
+import bwfile.objFormat._
 
 val presets = os
   .walk(os.home / "Music" / "bitwig" / "library" / "Presets")
@@ -9,3 +9,6 @@ val presets = os
 val objs = presets.map(BWPreset.fromFile(_).value)
 
 val obj = objs(0)
+
+os.walk(os.home / "Music" / "bitwig" / "library" / ".settings" / "devices").filter(_.last == "Default.bwpreset").map(os.mtime)
+System.currentTimeMillis()

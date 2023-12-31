@@ -1,6 +1,8 @@
-package com.garo
+package mpkmini
 
-import com.garo._
+import bwbridge._
+import bwbridge.given
+import plugins._
 import com.bitwig.extension.api._
 import com.bitwig.extension.controller.{ControllerExtension => _, _}
 import com.bitwig.extension.api.util.midi._
@@ -34,7 +36,7 @@ import cats.effect.unsafe.IORuntime
 import cats.effect.unsafe.implicits.global
 import java.io.StringWriter
 import java.io.PrintWriter
-import com.garo.Mode.Bindings
+import bwbridge.Mode.Bindings
 
 case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExtension()(_host) {
   implicit val modeCtx: ModeCtx = ModeCtx()

@@ -1,4 +1,4 @@
-package com.garo
+package bwbridge
 
 import com.bitwig.extension.api._
 import com.bitwig.extension.{controller => bitwigController}
@@ -9,10 +9,10 @@ import com.bitwig.extension.controller.{api => bitwig}
 import java.util.function.Supplier
 import _root_.java.sql.Wrapper
 import javax.sound.midi.MidiMessage
-import com.garo
 import java.net.Inet4Address
 import java.net.InetAddress
 import scala.annotation.targetName
+import plugins._
 
 trait Serializable {
   def toJson(): ujson.Value
@@ -88,8 +88,8 @@ class Application(application: bitwig.Application)(implicit ext: ControllerExten
   val minimize = createAction("Minimize window")
   val undo = Action("Undo", application.undoAction())
   val redo = Action("Redo", application.redoAction())
-  val loadDefaultPreset = createAction("Load Default Preset")
-  val saveDefaultPreset = createAction("Save as Default Preset")
+  val loadDefaultPreset = createAction("load_default_preset")
+  val saveDefaultPreset = createAction("save_default_preset")
 }
 
 case class ModeCtx()(implicit ext: ControllerExtension) {
@@ -512,7 +512,7 @@ case class HardwareButton(
           )
         )
 
-        def addBinding(bindable: com.garo.Action) = {
+        def addBinding(bindable: Action) = {
           bindings = bindings :+ bindable
           lastPress = None
           () => { bindings = bindings.filter(_ != bindable); lastPress = None }
@@ -537,7 +537,7 @@ case class HardwareButton(
           )
         )
 
-        def addBinding(bindable: com.garo.Action) = {
+        def addBinding(bindable: Action) = {
           bindings = bindings :+ bindable
           lastPress = None
           () => { bindings = bindings.filter(_ != bindable); lastPress = None }
@@ -1491,7 +1491,7 @@ case class SelectorSetting[T](
 }
 
 abstract class Enumeration extends scala.Enumeration {
-  class EnumValue(value: bitwig.EnumValue) extends com.garo.Value[Value](value) {
+  class EnumValue(value: bitwig.EnumValue) extends bwbridge.Value[Value](value) {
     protected def addValueObserver(callback: Value => Unit) =
       value.addValueObserver(new EnumValueChangedCallback {
         override def valueChanged(newValue: String) = callback(withName(value.get()))

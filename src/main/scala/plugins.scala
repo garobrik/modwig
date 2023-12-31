@@ -1,6 +1,7 @@
-package com.garo
+package plugins
 
-import com.garo._;
+import bwbridge._
+import bwbridge.given
 import com.bitwig.extension.controller.api.{
   Device => _,
   Track => _,
@@ -8,8 +9,8 @@ import com.bitwig.extension.controller.api.{
   InsertionPoint => _,
   Action => _,
   _
-};
-import com.bitwig.extension.controller.{api => bitwig};
+}
+import com.bitwig.extension.controller.{api => bitwig}
 import java.util.UUID
 
 abstract class SpecificDeviceSpec {
@@ -18,13 +19,13 @@ abstract class SpecificDeviceSpec {
 
 trait SpecificDevice {
   val exists: BoolValue
-  val device: com.garo.Device
+  val device: Device
 }
 
 class SpecificVST3Device(id: String, defaultParamID: Int) extends SpecificDeviceSpec {
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertVST3Device(id)
 
-  abstract class BaseDevice(val device: com.garo.Device)(using ControllerExtension) extends SpecificDevice {
+  abstract class BaseDevice(val device: Device)(using ControllerExtension) extends SpecificDevice {
     val specificDevice = device.device.createSpecificVst3Device(id)
     def param(id: Int) = Parameter(specificDevice.createParameter(id))
     def param(id: Int, name: String) = Parameter(specificDevice.createParameter(id), Some(name))
@@ -39,7 +40,7 @@ class SpecificBitwigDevice(idString: String, defaultParamID: String) extends Spe
   val id = UUID.fromString(idString)
   def insert(insertionPoint: InsertionPoint) = insertionPoint.insertionPoint.insertBitwigDevice(id)
 
-  abstract class BaseDevice(val device: com.garo.Device)(using ControllerExtension) extends SpecificDevice {
+  abstract class BaseDevice(val device: bwbridge.Device)(using ControllerExtension) extends SpecificDevice {
     val specificDevice = device.device.createSpecificBitwigDevice(id)
     def param(id: String) = Parameter(specificDevice.createParameter(id))
     val exists = {
@@ -50,26 +51,26 @@ class SpecificBitwigDevice(idString: String, defaultParamID: String) extends Spe
 }
 
 object Enso extends SpecificVST3Device("565354456E736F656E736F0000000000", 50) {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val lengthMult = param(50)
   }
 }
 
 object InstrumentSelector extends SpecificBitwigDevice("9588fbcf-721a-438b-8555-97e4231f7d2c", "INDEX") {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val index = param("INDEX")
   }
 }
 
 object Chain extends SpecificBitwigDevice("c86d21fb-d544-4daf-a1bf-57de22aa320c", "MIX") {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val gain = param("GAIN")
     val mix = param("MIX")
   }
 }
 
 object DrumSynth extends SpecificVST3Device("ABCDEF019182FAEB4149526D4D755379", 48) {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val instrument = List(1572, 1724, 48634, 48786, 49589, 49741, 49872, 50675).map(param)
     val model = List(48, 1667, 1819, 48750, 48881, 49684, 49836, 50618).map(param)
     val velocity = List(50, 1669, 1821, 48752, 48904, 49686, 49838, 50641).map(param)
@@ -88,7 +89,7 @@ object DrumSynth extends SpecificVST3Device("ABCDEF019182FAEB4149526D4D755379", 
 }
 
 object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val oscModel = param(85)
     val hpfModel = param(139)
     val filterModel = param(147)
@@ -170,7 +171,7 @@ object Diva extends SpecificVST3Device("D39D5B69D6AF42FA1234567844695661", 126) 
 }
 
 object Chromaphone extends SpecificVST3Device("56535443424D566368726F6D6170686F", 188) {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     class Layer(l: Int) {
       val gain = param(5 + l * 5)
       val balance = param(200 + l * 470)
@@ -285,13 +286,13 @@ object Chromaphone extends SpecificVST3Device("56535443424D566368726F6D6170686F"
 }
 
 object Latch extends SpecificBitwigDevice("93c9d566-4cc9-4895-bf5b-475cab44eba9", "TRIGGER") {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val on = device.remoteControls.controls(0)
   }
 }
 
 object OtherDesertCities extends SpecificVST3Device("ABCDEF019182FAEB417544614F444331", 48) {
-  class Device(device: com.garo.Device)(using ControllerExtension) extends super.BaseDevice(device) {
+  class Device(device: bwbridge.Device)(using ControllerExtension) extends super.BaseDevice(device) {
     val time1 = param(48)
     val time2 = param(49)
     val regen = param(50)

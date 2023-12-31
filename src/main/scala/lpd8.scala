@@ -1,16 +1,15 @@
-package com.garo
+package lpd8
 
 import java.util.UUID
 
+import bwbridge._
 import com.bitwig.extension.api._
-import com.bitwig.extension.controller._
+import com.bitwig.extension.controller.{ControllerExtension => _, _}
 import com.bitwig.extension.api.util.midi._
 import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api._
 import com.bitwig.extension.controller.{api => bitwig}
 
-import com.garo.ControllerExtensionProxy
-import com.garo.ControllerExtension
 import _root_.java.util.function.Supplier
 
 case class LPD8Extension(_host: ControllerHost) extends ControllerExtension()(_host) {
@@ -90,7 +89,7 @@ case class LPD8Extension(_host: ControllerHost) extends ControllerExtension()(_h
     def hardwareControl: bitwig.HardwareControl
 
     def clearBindings() = bindingSource.clearBindings()
-    def addBinding(binding: HardwareBindable) = bindingSource.addBinding(binding)
+    def addBinding(binding: bitwig.HardwareBindable) = bindingSource.addBinding(binding)
     def setName(name: String) = hardwareControl.setName(name)
   }
 

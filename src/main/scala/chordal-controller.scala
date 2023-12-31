@@ -1,4 +1,4 @@
-package com.garo
+package bwbridge
 
 import java.util.UUID
 
@@ -9,7 +9,7 @@ import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api._
 import com.bitwig.extension.controller.{api => bitwig}
 
-import com.garo.ControllerExtension
+import bwbridge.ControllerExtension
 
 case class ChordalControllerExtension(
     _host: ControllerHost

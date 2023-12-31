@@ -1,4 +1,4 @@
-package com.garo
+package testExtension
 
 import java.util.UUID
 import java.lang.reflect._;
@@ -9,8 +9,8 @@ import com.bitwig.extension.api.util.midi._
 import com.bitwig.extension.callback._
 import com.bitwig.extension.controller.api._
 
-import com.garo.ControllerExtensionProxy
-import com.garo.ControllerExtension
+import bwbridge.ControllerExtensionProxy
+import bwbridge.ControllerExtension
 import java.{util => ju}
 
 case class TestExtension(_host: ControllerHost) extends ControllerExtension()(_host) {

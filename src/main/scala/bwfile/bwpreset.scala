@@ -1,4 +1,4 @@
-package com.garo.bwfile
+package bwfile
 
 import scodec.{bits => _, _}
 import scodec.bits._
@@ -9,26 +9,26 @@ import cats.Monoid
 import cats.syntax.all._
 import scala.collection.mutable
 
-object Reflect:
-  import scala.compiletime._
-  inline def enumerateSealed[T](using
-      m: scala.deriving.Mirror.SumOf[T]
-  ) = allInstances[m.MirroredElemTypes, m.MirroredMonoType]
+// object Reflect:
+//   import scala.compiletime._
+//   inline def enumerateSealed[T](using
+//       m: scala.deriving.Mirror.SumOf[T]
+//   ) = allInstances[m.MirroredElemTypes, m.MirroredMonoType]
 
-  inline def allInstances[ET <: Tuple, T]: List[T] =
-    import scala.compiletime.*
+//   inline def allInstances[ET <: Tuple, T]: List[T] =
+//     import scala.compiletime.*
 
-    inline erasedValue[ET] match
-      case _: EmptyTuple => Nil
-      case _: (t1 *: t2 *: ts)  => summonInline[ValueOf[t1]].value.asInstanceOf[T] :: summonInline[ValueOf[t2]].value.asInstanceOf[T] :: allInstances[ts, T]
-      case _: (t *: ts)  => summonInline[ValueOf[t]].value.asInstanceOf[T] :: allInstances[ts, T]
-end Reflect
+//     inline erasedValue[ET] match
+//       case _: EmptyTuple => Nil
+//       case _: (t1 *: t2 *: ts)  => summonInline[ValueOf[t1]].value.asInstanceOf[T] :: summonInline[ValueOf[t2]].value.asInstanceOf[T] :: allInstances[ts, T]
+//       case _: (t *: ts)  => summonInline[ValueOf[t]].value.asInstanceOf[T] :: allInstances[ts, T]
+// end Reflect
 
 sealed abstract class Obj(val tag: Long):
   override def toString() = this.getClass().getSimpleName().filter(_ != '$')
 
 object Obj:
-  val all = Reflect.enumerateSealed[Obj]
+  // val all = Reflect.enumerateSealed[Obj]
 
   import Value._
   trait ID:
@@ -150,7 +150,7 @@ object Obj:
     override def toString() = this.getClass().getSimpleName().filter(_ != '$')
 
   object Field:
-    val all = Reflect.enumerateSealed[Obj.Field[_]]
+    // val all = Reflect.enumerateSealed[Obj.Field[_]]
 
     object DeviceID extends Field(0x99)
     object Device extends Field(0x1421)
@@ -225,11 +225,14 @@ object Value:
   case class Str(value: java.lang.String) extends Value:
     override def toString() = s"\"$value\""
   case class Object(objType: scala.Long, values: List[Object.Field]) extends Value:
+    // override def toString() =
+    //   s"${Obj.all.find(_.tag == objType).getOrElse(objType.toHexString)}(${String.join(", ", values.map(_.toString()): _*)})"
     override def toString() =
-      s"${Obj.all.find(_.tag == objType).getOrElse(objType.toHexString)}(${String.join(", ", values.map(_.toString()): _*)})"
+      s"${objType.toHexString}(${String.join(", ", values.map(_.toString()): _*)})"
   object Object:
     case class Field(id: scala.Long, value: Value):
-      override def toString() = s"${Obj.Field.all.find(_.tag == id).getOrElse(id.toHexString)}: ${value}"
+      // override def toString() = s"${Obj.Field.all.find(_.tag == id).getOrElse(id.toHexString)}: ${value}"
+      override def toString() = s"${id.toHexString}: ${value}"
   case class Null(value: Unit) extends Value:
     override def toString() = "Null"
   case class Un0B(value: ByteVector) extends Value
