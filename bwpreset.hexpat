@@ -40,7 +40,7 @@ enum ValueType : u8 {
   Double = 0x07,
   Str = 0x08,
   BObj = 0x09,
-  Un0A = 0x0A,
+  Null = 0x0A,
   Un0B = 0x0B,
   Un0D = 0x0D,
   U32Arr = 0x0F,
@@ -85,7 +85,7 @@ struct Value {
     }
     (ValueType::Bool): bool value;
     (ValueType::BObj): BObj value [[inline]];
-    (ValueType::Un0A): {
+    (ValueType::Null): {
       str value = "";
     }
     (ValueType::Un0B): u32;

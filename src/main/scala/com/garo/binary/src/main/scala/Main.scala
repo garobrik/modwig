@@ -5,6 +5,7 @@ import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import cats.Monoid
 import cats.syntax.all._
+import scala.collection.mutable
 
 def listWithTerminator[A](elem: Codec[A], term: Codec[Unit]): Codec[List[A]] = Codec(
   l => (list(elem) :: term).encode((l, ())),
@@ -25,9 +26,9 @@ val asciiHexCodec = filtered(ascii, bits(32)).xmap(
 )
 
 sealed abstract class Value:
-  def walk[T: Monoid](f: Value => T): T =
+  def walk[T: Monoid](f: PartialFunction[Value, T]): T =
     Monoid.combine(
-      f(this),
+      f.applyOrElse(this, _ => Monoid.empty),
       this match {
         case Value.Object(objType, values) => Monoid.combineAll(values.map(_.value.walk(f)))
         case Value.ObjectList(value)       => Monoid.combineAll(value.map(_.walk(f)))
@@ -35,8 +36,13 @@ sealed abstract class Value:
       }
     )
 
-  def transform(f: Value => Value): Value =
-    f(this match {
+  def walkObjs[T: Monoid](tag: Long, f: PartialFunction[Value.Object, T]): T = walk{
+    case obj@Value.Object(`tag`, _) => f.applyOrElse(obj, Monoid.empty)
+  }
+  def walkObjs[T: Monoid](obj: Obj, f: PartialFunction[Value.Object, T]): T = walkObjs(obj.tag, f)
+
+  def transform(f: PartialFunction[Value, Value]): Value =
+    f.applyOrElse(this match {
       case Value.Object(objType, values) =>
         Value.Object(
           objType,
@@ -44,13 +50,17 @@ sealed abstract class Value:
         )
       case Value.ObjectList(value) => Value.ObjectList(value.map(_.transform(f).asInstanceOf[Value.Object]))
       case _                       => this
-    })
+    }, identity)
+  
+  def transformObjs(obj: Obj, f: PartialFunction[Value.Object, Value.Object]): Value = transform{
+    case obj@Value.Object(obj.tag, _) => f(obj)
+  }
 
-  def /(field: Field) = this match {
-    case Value.Object(tpe, values) => values.find(_.id == field.tag).map(_.value)
+  def /[V <: Value](field: Field[V]) = this match {
+    case Value.Object(tpe, values) => values.find(_.id == field.tag).map(_.value.asInstanceOf[V])
     case _                         => Option.empty
   }
-  def /!(field: Field) = this.asInstanceOf[Value.Object].values.find(_.id == field.tag).get.value
+  def /![V <: Value](field: Field[V]) = this.asInstanceOf[Value.Object].values.find(_.id == field.tag).get.value.asInstanceOf[V]
 end Value
 
 object Value:
@@ -65,10 +75,12 @@ object Value:
     override def toString() = s"$value"
   case class Str(value: java.lang.String) extends Value:
     override def toString() = s"\"$value\""
-  case class Object(objType: scala.Long, values: List[Object.Field]) extends Value
+  case class Object(objType: scala.Long, values: List[Object.Field]) extends Value:
+    override def toString() = s"${objType.toString()}(${String.join(", ", values.map(_.toString()):_*)})"
   object Object:
-    case class Field(id: scala.Long, value: Value)
-  case class Un0A(value: Unit) extends Value
+    case class Field(id: scala.Long, value: Value):
+      override def toString() = s"${id.toHexString}: ${value}"
+  case class Null(value: Unit) extends Value
   case class Un0B(value: ByteVector) extends Value
   case class Un0D(value: ByteVector) extends Value
   case class U32Arr(values: List[scala.Long]) extends Value
@@ -109,7 +121,7 @@ object Value:
         .as[Value.Str]
     )
     .typecase(0x09, lazily(objectCodec).as[Value.Object])
-    .typecase(0x0a, constant(hex"").as[Value.Un0A])
+    .typecase(0x0a, constant(hex"").as[Value.Null])
     .typecase(0x0b, bytes(4).as[Value.Un0B])
     .typecase(0x0d, variableSizeBytesLong(uint32, bytes).as[Value.Un0D])
     .typecase(0x0f, listOfN(int32, uint32).as[Value.U32Arr])
@@ -120,9 +132,13 @@ object Value:
     .typecase(0x19, listOfN(int32, ascii32).as[Value.StrArr])
 end Value
 
-sealed abstract class Field(val tag: Long)
+sealed abstract class Field[V <: Value](val tag: Long):
+  if (Field.fieldSet.exists(_.tag == tag)) throw Exception()
+  Field.fieldSet.add(this)
 
 object Field:
+  private val fieldSet = mutable.Set[Field[_]]()
+  def all = List(fieldSet)
   object RCName extends Field(0x1b72)
 
   object DeviceOpen extends Field(0x1a8c)
@@ -131,14 +147,20 @@ object Field:
 
   object DeviceID extends Field(0x99)
   object Device extends Field(0x1421)
-  object RCPagesPages extends Field(0x1a7e)
   object UUID extends Field(0x18c6)
 
-sealed abstract class Obj(val tag: Long)
+sealed abstract class Obj(val tag: Long):
+  if (Obj.objSet.exists(_.tag == tag)) throw Exception()
+  Obj.objSet.add(this)
+
 object Obj:
+  private val objSet = mutable.Set[Obj]()
+  def all = List(objSet)
+
+  import Value._
   trait ID:
     val ID = Obj.ID
-  object ID extends Field(0x02b9)
+  object ID extends Field[Str](0x02b9)
 
   trait Module:
     val PresetName = Module.PresetName
@@ -152,27 +174,27 @@ object Obj:
     val PresetTags = Module.PresetTags
     val On = Module.On
   object Module:
-    object PresetName extends Field(0x12de)
-    object DeviceName extends Field(0x009a)
-    object UserDefinedName extends Field(0x1559)
-    object DeviceCreator extends Field(0x009b)
-    object DeviceCat extends Field(0x009c)
-    object PresetAuthor extends Field(0x009e)
-    object PresetDesc extends Field(0x009f)
-    object PresetCat extends Field(0x00a1)
-    object PresetTags extends Field(0x00a2)
-    object On extends Field(0x00a3)
+    object PresetName extends Field[Str](0x12de)
+    object DeviceName extends Field[Str](0x009a)
+    object UserDefinedName extends Field[Str](0x1559)
+    object DeviceCreator extends Field[Str](0x009b)
+    object DeviceCat extends Field[Str](0x009c)
+    object PresetAuthor extends Field[Str](0x009e)
+    object PresetDesc extends Field[Str](0x009f)
+    object PresetCat extends Field[Str](0x00a1)
+    object PresetTags extends Field[Str](0x00a2)
+    object On extends Field[Bool](0x00a3)
 
   object Modulators extends Obj(0x075f) with ID:
-    object List extends Field(0x1a46)
+    object List extends Field[ObjectList](0x1a46)
 
   object Modulator extends Obj(0x06c9) with Module:
-    object Contents extends Field(0x18c7)
+    object Contents extends Field[Object](0x18c7)
+    object Index extends Field[U8](0x1a1b)
 
   object ModParam extends Obj(0x06db)
 
-  object Label extends Obj(0x06d9)
-  object Value extends Obj(0x85)
+  object ValueTmp extends Obj(0x85)
   object Preset extends Obj(0x561)
 
   trait Device extends Module:
@@ -181,89 +203,109 @@ object Obj:
     val RCPages = Device.RCPages
     val RCPage = Device.RCPage
   object Device:
-    object Active extends Field(0x137e)
-    object Modulators extends Field(0x18f5)
-    object RCPages extends Field(0x1a85)
-    object RCPage extends Field(0x1b75)
+    object Active extends Field[Bool](0x137e)
+    object Modulators extends Field[Object](0x18f5)
+    object RCPages extends Field[Object](0x1a85)
+    object RCPage extends Field[Object](0x1b75)
 
   object BitwigDevice extends Obj(0x0040) with Device:
-    object Contents extends Field(0x00a4)
+    object Contents extends Field[Object](0x00a4)
   object DeviceContents extends Obj(0x00d3):
-    object List extends Field(0x020c)
+    object List extends Field[ObjectList](0x020c)
 
   object VSTDevice extends Obj(0x0728) with Device
 
   object DeviceChain extends Obj(0x24e)
 
-  trait Param extends ID:
-    def Value: Field
+  trait Param[V <: Value] extends ID:
+    def Value: Field[V]
   object Param extends ID:
     val all = List(DoubleParam, IntParam, BoolParam, U8Param)
 
-  object DoubleParam extends Obj(0x85) with Param:
-    override object Value extends Field(0x0136)
-  object IntParam extends Obj(0xf7) with Param:
-    override object Value extends Field(0x0330)
-  object BoolParam extends Obj(0x7f) with Param:
-    override object Value extends Field(0x012f)
-  object U8Param extends Obj(0x189) with Param:
-    override object Value extends Field(0x0273)
+  object DoubleParam extends Obj(0x0085) with Param[Double]:
+    override object Value extends Field[Double](0x0136)
+  object IntParam extends Obj(0x00f7) with Param[U32]:
+    override object Value extends Field[U32](0x0330)
+  object BoolParam extends Obj(0x007f) with Param[Bool]:
+    override object Value extends Field[Bool](0x012f)
+  object U8Param extends Obj(0x0189) with Param[U8]:
+    override object Value extends Field[U8](0x0273)
+
+  object BoolSetting extends Obj(0x06db) with ID:
+    object Value extends Field[Bool](0x18f9)
+  
+  object Label extends Obj(0x06d9) with ID:
+    object Value extends Field[Str](0x18f6)
 
   object GridPolyParams extends Obj(0xd94)
   object GridModules extends Obj(0x771)
 
+  object RCPages extends Obj(0x077d):
+    object Pages extends Field[ObjectList](0x1a7e)
+
   object RCPage extends Obj(0x077b):
-    object RCPageName extends Field(0x1b69)
-    object RCPageTags extends Field(0x1b79)
-    object RCPageRCs extends Field(0x1a7a)
+    object Name extends Field[Str](0x1b69)
+    object Tags extends Field[Str](0x1b79)
+    object RCs extends Field[ObjectList](0x1a7a)
+
+  object CurrentRCPage extends Obj(0x1b75):
+    object Name extends Field[Str](0x1b72)
+    object Index extends Field[U8](0x1b73)
 
   object RemoteControl extends Obj(0x077c):
-    object RCName extends Field(0x1a7b)
-    object RCTarget extends Field(0x1a7c)
-    object RCIndex extends Field(0x1a88)
-    object RCMeta extends Field(0x1a7d)
+    object Name extends Field[Str](0x1a7b)
+    object Target extends Field[Str](0x1a7c)
+    object Index extends Field[U8](0x1a88)
+    object Meta extends Field[Object](0x1a7d)
 
   object ModSource extends Obj(0x2fc):
-    object ModSourceTargets extends Field(0x0e20)
+    object Targets extends Field[ObjectList](0x0e20)
 
   object ModTarget extends Obj(0x02fd):
-    object ModTargetTarget extends Field(0x0e3d)
-    object ModTargetMeta extends Field(0x1334)
-    object ModTargetAmt extends Field(0x0e32)
+    object Target extends Field[Str](0x0e3d)
+    object Meta extends Field[Object](0x1334)
+    object Amount extends Field[Double](0x0e32)
+    object Enabled extends Field[Bool](0x2d3b)
+    object ResponseCurve extends Field[U8](0x2c4c)
+    object ScaledBy extends Field[Str](0x2d2c)
 
 def printParams(value: Value) = value.walk {
   case obj @ Value.Object(objType, values) if Obj.Param.all.map(_.tag).contains(objType) =>
     List(s"${obj /! Obj.Param.ID}: ${obj.values(1).value}")
-  case _ => List()
 }
 
 def doublesToOne(value: Value) = value
-  .transform {
-    case obj @ Value.Object(Obj.DoubleParam.tag, _) =>
-      obj.transform { case _: Value.Double => Value.Double(1.0); case value => value }
-    case value => value
-  }
+  .transformObjs(Obj.DoubleParam, _.transform{ case Value.Double(_) => Value.Double(1.0) }.asInstanceOf[Value.Object])
   .asInstanceOf[Value.Object]
+
+def rcTargetsWithTag(tag: String, value: Value) = value.walkObjs(Obj.RCPage, {
+  case obj if (obj /! Obj.RCPage.Tags).value.split(",").contains(tag) => (obj /! Obj.RCPage.RCs).value.map(_ /! Obj.RemoteControl.Target).map(_.value)
+})
 
 case class Prefix(bytes: ByteVector, start: Long)
 val prefix = constant(asciiBytes"BtWg") ~> bytes(16) :: asciiHexCodec
-val bwpreset = (prefix.flatZip { (_, start) => bytes(start - 24) :: Value.objectCodec :: bytes }).complete
+
+case class BWPreset(prefix: ByteVector, start: Int, presuffix: ByteVector, value: Value.Object, suffix: ByteVector)
+object BWPreset:
+  val codec = (prefix.flatConcat { (_, start) => bytes(start - 24) :: Value.objectCodec :: bytes }).complete.as[BWPreset]
+
+  def fromFile(path: os.Path) = codec.decode(BitVector(os.read.bytes(path))).require.value
 
 @main def hello: Unit =
   val presets = os
-    .walk(os.home / "Music" / "bitwig" / "library" / "Presets" / "Flanger+")
+    .walk(os.home / "Music" / "bitwig" / "library" / "Presets")
     .filter(_.ext == "bwpreset")
     .filter(!_.baseName.endsWith("-test"))
 
-  val objs = presets.map(os.read.bytes).map(BitVector(_)).map(bwpreset.decode).map(_.require)
-  val results = presets.zip(objs).map { case (path, res) => (path, printParams(res.value._2._2)) }
+  val objs = presets.map(BWPreset.fromFile)
+  val results = presets.zip(objs).map { case (path, res) => (path, rcTargetsWithTag("xy", res.value)) }
   results.foreach(println(_))
-  presets.zip(objs).foreach { (path, res) =>
-    {
-      val newRes = res.value.copy(_2 = res.value._2.copy(_2 = doublesToOne(res.value._2._2)))
-      os.write.over(
-        os.Path(path.toNIO.getParent()) / s"${path.baseName}-test.${path.ext}",
-        bwpreset.encode(newRes).require.toByteArray
-      )
-    }
-  }
+  // presets.zip(objs).foreach { (path, res) =>
+  //   {
+  //     val newRes = res.value.copy(_2 = res.value._2.copy(_2 = doublesToOne(res.value._2._2)))
+  //     os.write.over(
+  //       os.Path(path.toNIO.getParent()) / s"${path.baseName}-test.${path.ext}",
+  //       bwpreset.encode(newRes).require.toByteArray
+  //     )
+  //   }
+  // }

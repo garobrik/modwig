@@ -88,6 +88,8 @@ class Application(application: bitwig.Application)(implicit ext: ControllerExten
   val minimize = createAction("Minimize window")
   val undo = Action("Undo", application.undoAction())
   val redo = Action("Redo", application.redoAction())
+  val loadDefaultPreset = createAction("Load Default Preset")
+  val saveDefaultPreset = createAction("Save as Default Preset")
 }
 
 case class ModeCtx()(implicit ext: ControllerExtension) {
