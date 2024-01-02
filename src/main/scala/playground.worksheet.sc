@@ -12,3 +12,8 @@ val obj = objs(0)
 
 os.walk(os.home / "Music" / "bitwig" / "library" / ".settings" / "devices").filter(_.last == "Default.bwpreset").map(os.mtime)
 System.currentTimeMillis()
+
+val flanger = BWPreset.fromFile(os.home / "Music" / "bitwig" / "library" / "Presets" / "Flanger+" / "flanger.bwpreset")
+
+val wKeytrack = flanger.addModulator(RelativeKeytrack).addModulator(RelativeKeytrack).addModulator(LFO)
+os.write.over(os.home / "Music" / "bitwig" / "library" / "Presets" / "Flanger+" / "wkeytrack.bwpreset", wKeytrack.toBytes)
