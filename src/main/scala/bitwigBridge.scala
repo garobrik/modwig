@@ -19,7 +19,7 @@ trait Serializable {
 }
 given Conversion[Serializable, ujson.Value] = _.toJson()
 
-abstract class ControllerExtension(implicit val host: ControllerHost) {
+abstract class ControllerExtension(using val host: ControllerHost) {
   implicit val extension: ControllerExtension = this
 
   var _isInitializaing = true
@@ -92,7 +92,7 @@ class Application(application: bitwig.Application)(implicit ext: ControllerExten
   val saveDefaultPreset = createAction("save_default_preset")
 }
 
-case class ModeCtx()(implicit ext: ControllerExtension) {
+case class ModeCtx()(using ext: ControllerExtension) {
   private var stack = Seq[Mode]();
 
   def push(mode: Mode) = update(mode +: _)

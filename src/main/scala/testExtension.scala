@@ -13,7 +13,7 @@ import bwbridge.ControllerExtensionProxy
 import bwbridge.ControllerExtension
 import java.{util => ju}
 
-case class TestExtension(_host: ControllerHost) extends ControllerExtension()(_host) {
+class TestExtension(using _host: ControllerHost) extends ControllerExtension {
   def supers(cls: Class[_]): Seq[Class[_]] = {
     val sup = cls.getSuperclass
     if (sup != null) sup +: supers(sup) else Seq()
@@ -123,5 +123,5 @@ class TestExtensionDefinition extends ControllerExtensionDefinition {
     }
   }
 
-  override def createInstance(host: ControllerHost) = ControllerExtensionProxy(TestExtension.apply, this, host)
+  override def createInstance(host: ControllerHost) = ControllerExtensionProxy(TestExtension(using _), this, host)
 }

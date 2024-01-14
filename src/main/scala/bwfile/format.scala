@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets
 import cats.Monoid
 import cats.syntax.all._
 import scala.collection.mutable
+import scala.util.chaining._
 
 // object Reflect:
 //   import scala.compiletime._
@@ -44,11 +45,17 @@ sealed abstract class Obj(val tag: Long):
 object Obj:
   // val all = Reflect.enumerateSealed[Obj]
 
-  case class FieldArg[V <: Value](field: Field[V], value: V)
   import Value._
   trait ID:
     val ID = Obj.ID
-  object ID extends Field[Str](0x02b9)
+  object ID extends Field[Str](0x02b9):
+    def find(id: String) = new Lens[ObjectList, Object] {
+      def get(t: ObjectList) = t.value.find(ID.this.get(_).value == id).get
+      def mut(t: ObjectList, f: Object => Object) = ObjectList(t.value.map {
+        case obj if ID.this.get(obj).value == id => f(obj)
+        case obj                                 => obj
+      })
+    }
 
   trait Module extends ID:
     val PresetName = Module.PresetName
@@ -77,10 +84,12 @@ object Obj:
     object List extends Field[ObjectList](0x1a46)
 
   object Modulator extends Obj(0x06c9) with Module:
-    object Contents extends Field[Object](0x18c7)
+    object ContentsField extends Field[Object](0x18c7)
     object Column extends Field[U8](0x1a1a)
     object Row extends Field[U8](0x1a1b)
     object UUID extends Field[UUID](0x18c6)
+
+    val Contents = ContentsField(Obj.Contents.List)
 
   object ModParam extends Obj(0x06db)
 
@@ -94,6 +103,9 @@ object Obj:
     val Modulators = Device.Modulators
     val RCPages = Device.RCPages
     val RCPage = Device.RCPage
+    val Open = Device.Open
+    val RemoteControlsOpen = Device.RemoteControlsOpen
+    val ModsOpen = Device.ModsOpen
   object Device:
     object Active extends Field[Bool](0x137e)
     object Modulators extends Field[Object](0x18f5)
@@ -103,11 +115,15 @@ object Obj:
     object RemoteControlsOpen extends Field[Bool](0x1a8d)
     object ModsOpen extends Field[Bool](0x1aa9)
 
+    val ModList = Modulators(Obj.Modulators.List)
+
   object BitwigDevice extends Obj(0x0040) with Device:
-    object Contents extends Field[Object](0x00a4)
+    object ContentsField extends Field[Object](0x00a4)
     object UUID extends Field[UUID](0x0099)
 
-  object DeviceContents extends Obj(0x00d3):
+    val Contents = ContentsField(Obj.Contents.List)
+
+  object Contents extends Obj(0x00d3) with ID:
     object List extends Field[ObjectList](0x020c)
 
   object VSTDevice extends Obj(0x0728) with Device
@@ -159,6 +175,16 @@ object Obj:
     object Targets extends Field[ObjectList](0x0e20)
 
   object ModTarget extends Obj(0x02fd):
+    val default = Value.objectCodec
+      .decode(
+        hex"000002FD000002B9080000000000000E3D0800000028434F4E54454E54532F524F4F545F47454E455249435F4D4F44554C452F504944313466623932393800001334090000007B0000012407000000000000000000000125073FF00000000000000000037B07000000000000000000000126010000000127010000000BC60100000007C407BFF00000000000000000012801010000115105010000115205010000000000000E32073FD851EB851EB85700002D3B050100002C4C010000002D2C080000000000000000".toBitVector
+      )
+      .require
+      .value
+
+    def apply(target: String, amount: scala.Double = 1.0, scaledBy: String = "") =
+      default.pipe(Target.mut(_, _ => target)).pipe(Amount.mut(_, _ => amount)).pipe(ScaledBy.mut(_, _ => scaledBy))
+
     object Target extends Field[Str](0x0e3d)
     object Meta extends Field[Object](0x1334)
     object Amount extends Field[Double](0x0e32)
@@ -176,7 +202,7 @@ object Obj:
     })
 
   object Field
-    // val all = Reflect.enumerateSealed[Obj.Field[_]]
+  // val all = Reflect.enumerateSealed[Obj.Field[_]]
 
 end Obj
 
@@ -230,6 +256,7 @@ end Value
 
 given Conversion[Int, Value.U8] = Value.U8(_)
 given Conversion[String, Value.Str] = Value.Str(_)
+given Conversion[Double, Value.Double] = Value.Double(_)
 
 object Value:
   case class U8(value: scala.Int) extends Value:

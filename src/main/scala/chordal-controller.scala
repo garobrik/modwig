@@ -11,9 +11,7 @@ import com.bitwig.extension.controller.{api => bitwig}
 
 import bwbridge.ControllerExtension
 
-case class ChordalControllerExtension(
-    _host: ControllerHost
-) extends ControllerExtension()(_host) {
+class ChordalControllerExtension(using _host: ControllerHost) extends ControllerExtension {
   // lazy val noteInput = host.getMidiInPort(0).createNoteInput("Instrument", "000000")
   // lazy val doc = host.getDocumentState()
 
@@ -254,5 +252,5 @@ class ChordalControllerExtensionDefinition extends ControllerExtensionDefinition
   }
 
   override def createInstance(host: ControllerHost) =
-    ControllerExtensionProxy(ChordalControllerExtension.apply, this, host)
+    ControllerExtensionProxy(ChordalControllerExtension(using _), this, host)
 }

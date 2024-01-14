@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets
 import cats.Monoid
 import cats.syntax.all._
 import scala.collection.mutable
+import scala.util.chaining._
 
 def rcTargetsWithTag(tag: String, value: Value) = value.walkObjs(
   Obj.RCPage,
@@ -18,8 +19,29 @@ def rcTargetsWithTag(tag: String, value: Value) = value.walkObjs(
 )
 
 case class BWPreset(prefix: ByteVector, start: Int, presuffix: ByteVector, value: Value.Object, suffix: ByteVector):
-  def addModulator(modulator: Modulator) = 
-    copy(value = Obj.Preset.Device.mut(value, modulator.addTo(_)))
+  import Obj._
+
+  def addModulator(modulator: Modulator) =
+    copy(value = Preset.Device.mut(value, modulator.add(_)))
+
+  def addBinding(modulatorID: String, sourceID: String, target: String) =
+    copy(value =
+      Preset.Device.mut(
+        value,
+        _.pipe(
+          Device
+            .ModList(ID.find(modulatorID))(Modulator.Contents)(ID.find(sourceID))(ModSource.Targets)
+            .mut(
+              _,
+              targets => {
+                targets.appended(ModTarget(target, scaledBy = s"MODULATORS/${Preset.Device(Device.ModList).get(value).value.length}/CONTENTS/${Macro.source}"))
+              }
+            )
+        ).pipe(
+          Macro.addWithoutRCs(_)
+        )
+      )
+    )
 
   def toBytes = BWPreset.codec.encode(this).require.toByteArray
 

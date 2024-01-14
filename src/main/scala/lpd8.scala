@@ -12,7 +12,7 @@ import com.bitwig.extension.controller.{api => bitwig}
 
 import _root_.java.util.function.Supplier
 
-case class LPD8Extension(_host: ControllerHost) extends ControllerExtension()(_host) {
+class LPD8Extension(using _host: ControllerHost) extends ControllerExtension {
   val lpd8In = host.getMidiInPort(0)
   val lpd8Out = host.getMidiOutPort(0)
 
@@ -264,5 +264,5 @@ class LPD8ExtensionDefinition extends ControllerExtensionDefinition {
     }
   }
 
-  override def createInstance(host: ControllerHost) = ControllerExtensionProxy(LPD8Extension.apply, this, host)
+  override def createInstance(host: ControllerHost) = ControllerExtensionProxy(LPD8Extension(using _), this, host)
 }

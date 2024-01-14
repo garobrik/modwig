@@ -38,7 +38,7 @@ import java.io.StringWriter
 import java.io.PrintWriter
 import bwbridge.Mode.Bindings
 
-case class MPKminiExtension(_host: bitwig.ControllerHost) extends ControllerExtension()(_host) {
+class MPKminiExtension(using _host: bitwig.ControllerHost) extends ControllerExtension {
   implicit val modeCtx: ModeCtx = ModeCtx()
   implicit val MPKin: MidiIn = host.getMidiInPort(0)
   implicit val surface: HardwareSurface = host.createHardwareSurface()
@@ -740,5 +740,5 @@ class MPKminiExtensionDefinition extends ControllerExtensionDefinition {
   }
 
   override def createInstance(host: bitwig.ControllerHost) =
-    ControllerExtensionProxy(MPKminiExtension.apply, this, host)
+    ControllerExtensionProxy(MPKminiExtension.apply(using _), this, host)
 }
