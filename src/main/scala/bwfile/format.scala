@@ -49,13 +49,7 @@ object Obj:
   trait ID:
     val ID = Obj.ID
   object ID extends Field[Str](0x02b9):
-    def find(id: String) = new Lens[ObjectList, Object] {
-      def get(t: ObjectList) = t.value.find(ID.this.get(_).value == id).get
-      def mut(t: ObjectList, f: Object => Object) = ObjectList(t.value.map {
-        case obj if ID.this.get(obj).value == id => f(obj)
-        case obj                                 => obj
-      })
-    }
+    def find(id: String) = ObjectList.find(get(_).value == id)
 
   trait Module extends ID:
     val PresetName = Module.PresetName
@@ -171,6 +165,9 @@ object Obj:
     object Index extends Field[U8](0x1a88)
     object Meta extends Field[Object](0x1a7d)
 
+    def apply(name: String, target: String, index: Int): Value.Object =
+      super.apply(Name -> name, Target -> target, Index -> index)
+
   object ModSource extends Obj(0x2fc):
     object Targets extends Field[ObjectList](0x0e20)
 
@@ -182,7 +179,7 @@ object Obj:
       .require
       .value
 
-    def apply(target: String, amount: scala.Double = 1.0, scaledBy: String = "") =
+    def apply(target: String, amount: scala.Double = 10000.0, scaledBy: String = "") =
       default.pipe(Target.mut(_, _ => target)).pipe(Amount.mut(_, _ => amount)).pipe(ScaledBy.mut(_, _ => scaledBy))
 
     object Target extends Field[Str](0x0e3d)
@@ -294,6 +291,16 @@ object Value:
     override def toString() = s"[${String.join(", ", value.map(_.toString()): _*)}]"
 
     def appended = value.appended.andThen(ObjectList(_))
+    def length = value.length
+
+  object ObjectList:
+    def find(p: Object => Boolean) = new Lens[ObjectList, Object] {
+      def get(t: ObjectList) = t.value.find(p).get
+      def mut(t: ObjectList, f: Object => Object) = ObjectList(t.value.map {
+        case obj if p(obj) => f(obj)
+        case obj           => obj
+      })
+    }
 
   case class UUID(value: java.util.UUID) extends Value
   case class Un16(value: ByteVector) extends Value

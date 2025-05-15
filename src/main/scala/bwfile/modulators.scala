@@ -19,34 +19,62 @@ abstract class Modulator(name: String):
 
   def add(device: Value.Object) = {
     val list = Device.ModList.get(device).value
-    
-    device.pipe(Device.RCPages(RCPages.Pages).mut(_, _.appended(RCPage(
-      RCPage.Name -> name,
-      RCPage.Tags -> s"mod:${list.filter(Obj.Modulator.DeviceName.get(_).value != "Macro").length}",
-      RCPage.RCs -> Value.ObjectList(params.take(8).zipWithIndex.map{(p, i) => RemoteControl(
-        RemoteControl.Name -> "",
-        RemoteControl.Index -> i,
-        RemoteControl.Target -> s"MODULATORS/${list.length}/CONTENTS/${p}"
-      )})
-    )))).pipe(addWithoutRCs(_))
+
+    device
+      .pipe(
+        Device
+          .RCPages(RCPages.Pages)
+          .mut(
+            _,
+            _.appended(
+              RCPage(
+                RCPage.Name -> name,
+                RCPage.Tags -> s"mod:${list.filter(Obj.Modulator.DeviceName.get(_).value != "Macro").length}",
+                RCPage.RCs -> Value.ObjectList(params.take(8).zipWithIndex.map { (p, i) =>
+                  RemoteControl(
+                    "",
+                    s"MODULATORS/${list.length}/CONTENTS/${p}",
+                    i
+                  )
+                })
+              )
+            )
+          )
+      )
+      .pipe(addWithoutRCs(_))
   }
 
   def addWithoutRCs(device: Value.Object) = {
     val list = Device.ModList.get(device).value
-    Device.ModList.mut(device, _.appended(
-      default.pipe(Obj.Modulator.Column.mut(_, _ => list.length / 3))
-        .pipe(Obj.Modulator.Row.mut(_, _ => list.length % 3))
-        .pipe(Obj.Modulator.ID.mut(_, _ => list.length.toString))
-    ))
+    Device.ModList.mut(
+      device,
+      _.appended(
+        default
+          .pipe(Obj.Modulator.Column.mut(_, _ => list.length / 3))
+          .pipe(Obj.Modulator.Row.mut(_, _ => list.length % 3))
+          .pipe(Obj.Modulator.ID.mut(_, _ => list.length.toString))
+      )
+    )
   }
 
-
 object AHDSR extends Modulator("AHDSR"):
-  override def params = List("ATTACK_TIME", "HOLD_TIME", "DECAY_TIME", "SUSTAIN_LEVEL", "ATTACK_SHAPE", "RELEASE_SHAPE", "RELEASE_TIME", "DEPTH", "DECAY_SHAPE", "SINGLE_TRIGGER")
+  override def params = List(
+    "ATTACK_TIME",
+    "HOLD_TIME",
+    "DECAY_TIME",
+    "SUSTAIN_LEVEL",
+    "ATTACK_SHAPE",
+    "RELEASE_SHAPE",
+    "RELEASE_TIME",
+    "DEPTH",
+    "DECAY_SHAPE",
+    "SINGLE_TRIGGER"
+  )
   override def source = "EG"
 
 object LFO extends Modulator("LFO"):
-  override def params = List("RATE", "TIMEBASE", "DEPTH", "BIPOLAR", "SHAPE", "FORM", "PHASE", "TRIGGER", "DELAY", "FADE_IN")
+  override def params =
+    List("RATE", "TIMEBASE", "DEPTH", "BIPOLAR", "SHAPE", "FORM", "PHASE", "TRIGGER", "DELAY", "FADE_IN")
   override def source = "LFO"
 
 object RelativeKeytrack extends Modulator("Relative Keytrack"):

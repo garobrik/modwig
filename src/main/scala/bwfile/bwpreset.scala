@@ -25,23 +25,62 @@ case class BWPreset(prefix: ByteVector, start: Int, presuffix: ByteVector, value
     copy(value = Preset.Device.mut(value, modulator.add(_)))
 
   def addBinding(modulatorID: String, sourceID: String, target: String) =
-    copy(value =
-      Preset.Device.mut(
-        value,
-        _.pipe(
-          Device
-            .ModList(ID.find(modulatorID))(Modulator.Contents)(ID.find(sourceID))(ModSource.Targets)
-            .mut(
-              _,
-              targets => {
-                targets.appended(ModTarget(target, scaledBy = s"MODULATORS/${Preset.Device(Device.ModList).get(value).value.length}/CONTENTS/${Macro.source}"))
+    if (
+      Preset
+        .Device(Device.ModList)(ID.find(modulatorID)(Modulator.Contents)(ID.find(sourceID)))(ModSource.Targets)
+        .get(value)
+        .value
+        .exists(_(ModTarget.Target).value == target)
+    ) {
+      this
+    } else {
+      copy(value =
+        Preset.Device.mut(
+          value,
+          _.pipe(
+            Device
+              .ModList(ID.find(modulatorID))(Modulator.Contents)(ID.find(sourceID))(ModSource.Targets)
+              .mut(
+                _,
+                targets => {
+                  targets.appended(
+                    ModTarget(
+                      target,
+                      scaledBy =
+                        s"MODULATORS/${Preset.Device(Device.ModList).get(value).value.length}/CONTENTS/${Macro.source}"
+                    )
+                  )
+                }
+              )
+          ).pipe(
+            Macro.addWithoutRCs(_)
+          ).pipe { device =>
+            {
+              def rcPage(index: Int) =
+                RemoteControl("", s"MODULATORS/${Device.ModList.get(device).length - 1}/CONTENTS/VALUE", index)
+              if (device(Device.RCPages)(RCPages.Pages).value.exists(_(RCPage.Name).value == target)) {
+                Device
+                  .RCPages(RCPages.Pages)(Value.ObjectList.find(_(RCPage.Name).value == target)(RCPage.RCs))
+                  .mut(device, list => list.appended(rcPage(list.length)))
+              } else {
+                Device
+                  .RCPages(RCPages.Pages)
+                  .mut(
+                    device,
+                    _.appended(
+                      RCPage(
+                        RCPage.Name -> target,
+                        RCPage.Tags -> target,
+                        RCPage.RCs -> Value.ObjectList(List(rcPage(0)))
+                      )
+                    )
+                  )
               }
-            )
-        ).pipe(
-          Macro.addWithoutRCs(_)
+            }
+          }
         )
       )
-    )
+    }
 
   def toBytes = BWPreset.codec.encode(this).require.toByteArray
 
